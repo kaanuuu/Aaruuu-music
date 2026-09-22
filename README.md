@@ -40,7 +40,7 @@ REQUESTED BY @username
 .
 ├── main.py                   # 24/7 Long-polling worker process entry point
 ├── requirements.txt          # Production Python dependencies
-├── Procfile                  # Railway worker definition (worker: python main.py)
+├── Procfile                  # Railway worker definition (worker: python3 main.py)
 ├── railway.toml              # Railway deployment configuration
 ├── .env.example              # Documented environment variables template
 ├── .gitignore                # Production ignore rules (secrets, databases, caches)
@@ -153,9 +153,9 @@ Aaruu Music is engineered as a **long-running background worker** process that p
 3. In your Railway service dashboard, navigate to **Settings**:
    - Ensure the service is configured to use the worker entry point:
      ```text
-     worker: python main.py
+     worker: python3 main.py
      ```
-   - (Railway automatically detects the `Procfile` containing `worker: python main.py`).
+   - (Railway automatically detects the `Procfile` containing `worker: python3 main.py`).
 4. Navigate to **Variables** and add:
    - `BOT_TOKEN`: Your BotFather token.
    - `OWNER_ID`: Your Telegram numeric user ID.
@@ -225,12 +225,12 @@ You can validate the codebase locally before deploying:
 
 2. **Verify Code Compilation**:
    ```bash
-   python -m compileall .
+   python3 -m compileall .
    ```
 
 3. **Execute the Unit Test Suite**:
    ```bash
-   python -m unittest discover -s tests -v
+   python3 -m unittest discover -s tests -v
    ```
    All 23 tests cover:
    - `test_progress.py`: Time formatting, timestamp clamping, unicode visual bar calculation.
@@ -242,7 +242,7 @@ You can validate the codebase locally before deploying:
 
 4. **Run Locally**:
    ```bash
-   python main.py
+   python3 main.py
    ```
 
 ---
