@@ -1,20 +1,16 @@
-providers = ["python", "node"]
+providers = ["python"]
 
 [variables]
 PATH = "/opt/venv/bin:$PATH"
 
 [phases.setup]
-nixPkgs = ["python3", "python3Packages.pip", "ffmpeg", "..."]
+nixPkgs = ["python3", "python3Packages.pip", "ffmpeg"]
 
 [phases.install]
 cmds = [
   "python3 -m venv /opt/venv",
-  "/opt/venv/bin/pip install --break-system-packages -r requirements.txt",
-  "npm install"
+  "/opt/venv/bin/pip install --break-system-packages -r requirements.txt"
 ]
-
-[phases.build]
-cmds = ["npm run build"]
 
 [start]
 cmd = "/opt/venv/bin/python main.py"
