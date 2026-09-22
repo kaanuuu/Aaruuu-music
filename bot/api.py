@@ -7,7 +7,10 @@ and fallback message delivery with exponential backoff and 429 rate limit protec
 import asyncio
 import os
 from typing import Any, Dict, List, Optional
-import aiohttp
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
 from utils.logging import logger
 
 
@@ -17,14 +20,18 @@ class TelegramAPIClient:
     def __init__(self, token: Optional[str] = None):
         self._token: str = token or os.getenv("BOT_TOKEN", "").strip()
         self._base_url: str = f"https://api.telegram.org/bot{self._token}"
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: Optional[Any] = None
         self.bot_info: Dict[str, Any] = {}
 
     def set_token(self, token: str) -> None:
         self._token = token.strip()
         self._base_url = f"https://api.telegram.org/bot{self._token}"
 
-    async def get_session(self) -> aiohttp.ClientSession:
+    async def get_session(self) -> Any:
+        if aiohttp is None:
+            raise RuntimeError(
+                "aiohttp is not installed. Please install dependencies from requirements.txt."
+            )
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=45, connect=8)
             connector = aiohttp.TCPConnector(
