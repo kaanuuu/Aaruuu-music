@@ -202,6 +202,10 @@ class TelegramAPIClient:
             payload["reply_markup"] = reply_markup
         return await self.bot_api("sendMessage", payload)
 
+    async def delete_webhook(self, drop_pending_updates: bool = True) -> Dict[str, Any]:
+        """Deletes any existing webhook so getUpdates polling can work."""
+        return await self.bot_api("deleteWebhook", {"drop_pending_updates": drop_pending_updates})
+
     async def get_updates(
         self, offset: Optional[int] = None, timeout: int = 30
     ) -> Dict[str, Any]:

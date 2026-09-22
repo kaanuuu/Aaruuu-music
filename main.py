@@ -118,6 +118,14 @@ async def run_bot():
     # 24/7 Keep-alive heartbeat task (pings every 10 minutes to prevent sleep)
     heartbeat_task = asyncio.create_task(run_keep_alive_heartbeat())
 
+    # Delete any active webhook so long-polling getUpdates can function properly
+    try:
+        del_res = await bot_api_client.delete_webhook(drop_pending_updates=True)
+        if del_res.get("ok"):
+            logger.info("Cleared prior Telegram webhook. Clean long-polling ready.")
+    except Exception as e:
+        logger.warning("Could not auto-clear webhook: %s", str(e))
+
     print("Polling started")
     print("Aaruu Music is running.")
     logger.info("Aaruu Music worker is active and awaiting commands.")
@@ -133,6 +141,17 @@ async def run_bot():
                 description = updates_resp.get("description", "Unknown Telegram error")
                 error_code = updates_resp.get("error_code")
                 consecutive_errors += 1
+
+                # If webhook conflict occurs, delete webhook immediately and resume polling
+                if "deleteWebhook" in description or "webhook is active" in description.lower():
+                    logger.info("Active webhook detected. Purging webhook to enable getUpdates...")
+                    try:
+                        await bot_api_client.delete_webhook(drop_pending_updates=True)
+                    except Exception as e:
+                        logger.warning("Failed to purge webhook: %s", str(e))
+                    consecutive_errors = 0
+                    await asyncio.sleep(1)
+                    continue
 
                 # Rate limiting
                 if error_code == 429:
