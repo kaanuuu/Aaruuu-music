@@ -1,0 +1,6 @@
+{
+  "name": "Aaruu Music",
+  "description": "Production-ready Telegram Music Bot with native Rich Message player, queue management, and 24/7 Railway worker.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
