@@ -1,5 +1,6 @@
 [build]
 builder = "nixpacks"
+nixpacksConfigFile = "nixpacks.toml"
 
 [deploy]
 startCommand = "python3 main.py"
