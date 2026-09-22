@@ -1,1 +1,1 @@
-worker: python3 main.py
+worker: /opt/venv/bin/python main.py

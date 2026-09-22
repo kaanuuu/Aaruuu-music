@@ -191,7 +191,7 @@ export default function App() {
             <ShieldCheck className="w-4 h-4 text-emerald-500" />
             <span>Strict Bot-Only Architecture · 24/7 Keep-Alive Heartbeat Enabled</span>
           </div>
-          <span className="font-mono">Railway Procfile: worker: python3 main.py</span>
+          <span className="font-mono">Railway Procfile: worker: /opt/venv/bin/python main.py</span>
         </footer>
       </div>
     </div>

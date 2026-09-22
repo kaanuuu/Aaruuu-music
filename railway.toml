@@ -3,6 +3,6 @@ builder = "nixpacks"
 nixpacksConfigFile = "nixpacks.toml"
 
 [deploy]
-startCommand = "python3 main.py"
+startCommand = "/opt/venv/bin/python main.py"
 restartPolicyType = "ALWAYS"
 restartPolicyMaxRetries = 10
