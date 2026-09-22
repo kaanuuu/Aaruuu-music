@@ -3,6 +3,6 @@ builder = "nixpacks"
 nixpacksConfigFile = "nixpacks.toml"
 
 [deploy]
-startCommand = "/opt/venv/bin/python main.py"
+startCommand = "bash start.sh"
 restartPolicyType = "ALWAYS"
 restartPolicyMaxRetries = 10

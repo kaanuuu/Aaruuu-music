@@ -13,4 +13,4 @@ cmds = [
 ]
 
 [start]
-cmd = "/opt/venv/bin/python main.py"
+cmd = "bash start.sh"
