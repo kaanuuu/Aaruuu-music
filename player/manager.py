@@ -61,9 +61,11 @@ class PlayerManager:
             if not state.is_playing:
                 state.play(track, requester)
                 stream_ok = await voice_assistant.play_audio(chat_id, track.playable_source)
-                if not stream_ok and voice_assistant.last_error:
+                if not stream_ok:
                     state.stop()
-                logger.info("Chat %s: Now playing '%s' (stream_ok=%s)", chat_id, track.title, stream_ok)
+                    logger.info("Chat %s: Streaming failed for '%s' (last_error='%s')", chat_id, track.title, voice_assistant.last_error)
+                    return False, state, queue
+                logger.info("Chat %s: Now playing '%s'", chat_id, track.title)
                 return True, state, queue
             else:
                 queued = queue.add(track)

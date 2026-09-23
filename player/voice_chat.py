@@ -387,6 +387,12 @@ class VoiceChatAssistant:
                 api_hash=self.api_hash or "eb06d4abfb49dc3eeb1aeb98ae0f581e",
                 session_string=self.session_string,
             )
+
+            # Register real-time update listener so Pyrogram constantly caches peer access_hashes
+            @self.app.on_message()
+            async def _auto_peer_cache_handler(client, message):
+                pass
+
             await self.app.start()
             try:
                 me = await self.app.get_me()
@@ -400,10 +406,10 @@ class VoiceChatAssistant:
                     self.assistant_id,
                     self.assistant_name,
                 )
-                # Pre-cache assistant's existing dialogs and access hashes into SQLite storage
+                # Comprehensive pre-caching of assistant's dialogs and access hashes
                 try:
                     logger.info("Voice Chat: Pre-caching assistant dialogs and access hashes...")
-                    async for dialog in self.app.get_dialogs(limit=200):
+                    async for dialog in self.app.get_dialogs():
                         pass
                     logger.info("Voice Chat: Assistant dialogs pre-cached successfully.")
                 except Exception as d_err:
@@ -467,14 +473,8 @@ class VoiceChatAssistant:
                 except Exception:
                     pass
 
-                # Sanitize playable source: PyTgCalls cannot directly stream YouTube webpage URLs or googlevideo URLs on datacenter IPs without getting 403 HTTP blocked
+                # Playable stream URL
                 playable_stream = audio_source
-                if audio_source.startswith(("http://", "https://")) and (
-                    "youtube.com" in audio_source
-                    or "youtu.be" in audio_source
-                    or "googlevideo.com" in audio_source
-                ):
-                    playable_stream = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
                 # Fast peer verification & access hash caching before PyTgCalls call
                 peer_cached = False
@@ -482,14 +482,22 @@ class VoiceChatAssistant:
                     await self.app.get_chat(chat_id)
                     peer_cached = True
                 except Exception as peer_err:
-                    logger.info("Voice Chat: get_chat(%s) note: %s. Scanning assistant dialogs for access hash...", chat_id, str(peer_err))
+                    logger.info("Voice Chat: get_chat(%s) note: %s. Attempting member lookup and dialog scan...", chat_id, str(peer_err))
                     try:
-                        async for dialog in self.app.get_dialogs(limit=300):
-                            if dialog.chat and dialog.chat.id == chat_id:
-                                peer_cached = True
-                                break
-                    except Exception as d_err:
-                        logger.debug("Voice Chat: get_dialogs scan note: %s", str(d_err))
+                        if self.assistant_id:
+                            await self.app.get_chat_member(chat_id, self.assistant_id)
+                            peer_cached = True
+                    except Exception:
+                        pass
+
+                    if not peer_cached:
+                        try:
+                            async for dialog in self.app.get_dialogs():
+                                if dialog.chat and dialog.chat.id == chat_id:
+                                    peer_cached = True
+                                    break
+                        except Exception as d_err:
+                            logger.debug("Voice Chat: get_dialogs scan note: %s", str(d_err))
 
                 if not peer_cached:
                     try:
@@ -503,17 +511,6 @@ class VoiceChatAssistant:
                     except Exception as inv_err:
                         logger.debug("Voice Chat: Invite link peer resolution note: %s", str(inv_err))
 
-                # If peer is still not resolved/cached, assistant is not in group — fail instantly in 0.1s instead of hanging MTProto for 48s!
-                if not peer_cached:
-                    try:
-                        await self.app.get_chat(chat_id)
-                        peer_cached = True
-                    except Exception:
-                        asst_tag = f"@{self.assistant_username}" if self.assistant_username else "Assistant"
-                        self.last_error = f"ASSISTANT NOT IN GROUP - Please add {asst_tag} to this group and start Voice Chat."
-                        logger.warning("Voice Chat: Aborting PyTgCalls join - assistant is not in group %s", chat_id)
-                        return False
-
                 logger.info(
                     "Voice Chat: PyTgCalls joining VC call in chat %s with audio source...",
                     chat_id,
@@ -523,6 +520,18 @@ class VoiceChatAssistant:
                 ffmpeg_params = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
                 
                 def _build_stream(target_url: str):
+                    if MediaStream:
+                        try:
+                            from pytgcalls.types import AudioQuality
+                            return MediaStream(target_url, audio_parameters=AudioQuality.HIGH)
+                        except Exception:
+                            try:
+                                return MediaStream(target_url, ffmpeg_parameters=ffmpeg_params)
+                            except Exception:
+                                try:
+                                    return MediaStream(target_url)
+                                except Exception:
+                                    pass
                     if AudioPiped:
                         try:
                             return AudioPiped(target_url, additional_ffmpeg_parameters=ffmpeg_params)
@@ -530,12 +539,10 @@ class VoiceChatAssistant:
                             try:
                                 return AudioPiped(target_url, ffmpeg_parameters=ffmpeg_params)
                             except Exception:
-                                return AudioPiped(target_url)
-                    if MediaStream:
-                        try:
-                            return MediaStream(target_url, ffmpeg_parameters=ffmpeg_params)
-                        except Exception:
-                            return MediaStream(target_url)
+                                try:
+                                    return AudioPiped(target_url)
+                                except Exception:
+                                    pass
                     return target_url
 
                 stream_obj = _build_stream(playable_stream)

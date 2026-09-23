@@ -195,51 +195,64 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
     if status_msg_id:
         await bot_api_client.delete_message(chat_id, status_msg_id)
 
-    # If PyTgCalls encountered an active VC error (e.g. VC not started in group)
-    if is_now_playing and voice_assistant.last_error:
-        err_lower = voice_assistant.last_error.lower()
-        if any(term in err_lower for term in ("creategroupcall", "channel_invalid", "noactivegroupcall", "groupcallnotfound", "call_not_found", "chat_admin_required")):
-            asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
-            vc_alert = {
-                "type": "rich_message",
-                "blocks": [
-                    {
-                        "type": "heading",
-                        "text": to_bold_sans("VOICE CHAT NOT ACTIVE"),
-                        "size": 1,
-                    },
-                    {
-                        "type": "photo",
-                        "photo": {
-                            "type": "photo",
-                            "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
-                        },
-                    },
-                    {
-                        "type": "paragraph",
-                        "text": (
-                            f"⚠️ {to_bold_sans('GROUP VOICE CHAT IS NOT STARTED')}\n\n"
-                            f"Assistant {asst_tag} is in this group, but the group Voice Chat is not active yet!\n\n"
-                            f"👉 {to_bold_sans('HOW TO START')}:\n"
-                            f"1. Tap the group profile / header at top.\n"
-                            f"2. Tap the 3-dots (⋮) -> tap {to_bold_sans('Start Video Chat / Voice Chat')}.\n"
-                            f"3. (Optional) Promote {asst_tag} to Admin with 'Manage Video Chats' permission.\n\n"
-                            f"Once Voice Chat is running in the group, send /play again to stream live! 🎵"
-                        ),
-                    },
-                    {
-                        "type": "buttons",
-                        "buttons": [
-                            {"text": "💬 " + to_small_caps("support"), "url": "https://t.me/wzzkaanu"},
-                        ],
-                    },
-                ],
-            }
-            state.stop()
-            await bot_api_client.send_rich_message(chat_id, vc_alert)
+    # If voice assistant failed to stream (e.g. Assistant not in group or Voice Chat not active)
+    if voice_assistant.last_error and not state.is_playing and not is_now_playing:
+        err_text = voice_assistant.last_error
+        asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
+        
+        # Assistant not in group error
+        if "ASSISTANT NOT IN GROUP" in err_text or "not in this group" in err_text.lower():
+            await bot_api_client.send_message(
+                chat_id,
+                f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
+                f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
+                f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
+                f"1. Add {asst_tag} directly to this group as a member.\n"
+                f"2. Start Video Chat / Voice Chat in the group.\n\n"
+                f"Then send /play again to stream live! 🎵",
+            )
             return
 
-    if is_now_playing:
+        # Voice Chat not active error
+        vc_alert = {
+            "type": "rich_message",
+            "blocks": [
+                {
+                    "type": "heading",
+                    "text": to_bold_sans("VOICE CHAT NOT ACTIVE"),
+                    "size": 1,
+                },
+                {
+                    "type": "photo",
+                    "photo": {
+                        "type": "photo",
+                        "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+                    },
+                },
+                {
+                    "type": "paragraph",
+                    "text": (
+                        f"⚠️ {to_bold_sans('GROUP VOICE CHAT IS NOT STARTED')}\n\n"
+                        f"Assistant {asst_tag} is in this group, but the group Voice Chat is not active yet!\n\n"
+                        f"👉 {to_bold_sans('HOW TO START')}:\n"
+                        f"1. Tap the group profile / header at top.\n"
+                        f"2. Tap the 3-dots (⋮) -> tap {to_bold_sans('Start Video Chat / Voice Chat')}.\n"
+                        f"3. (Optional) Promote {asst_tag} to Admin with 'Manage Video Chats' permission.\n\n"
+                        f"Once Voice Chat is running in the group, send /play again to stream live! 🎵"
+                    ),
+                },
+                {
+                    "type": "buttons",
+                    "buttons": [
+                        {"text": "💬 " + to_small_caps("support"), "url": "https://t.me/wzzkaanu"},
+                    ],
+                },
+            ],
+        }
+        await bot_api_client.send_rich_message(chat_id, vc_alert)
+        return
+
+    if is_now_playing and state.current_track:
         rich_player = build_player_rich_message(state, queue)
         send_res = await bot_api_client.send_rich_message(chat_id, rich_player)
         msg_id = send_res.get("result", {}).get("message_id")
@@ -254,7 +267,7 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
             track.source_url,
             username,
         )
-    else:
+    elif not is_now_playing and len(queue) > 0:
         await bot_api_client.send_message(
             chat_id,
             f"➕ {to_small_caps('added to queue')}: {track.title}\n"

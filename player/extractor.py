@@ -51,17 +51,22 @@ class MediaExtractor:
     SAFE_FALLBACK_AUDIO = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
     def __init__(self):
-        self.cookies_path = os.getenv("YTDLP_COOKIES")
-        # Support inline cookies passed via environment variable
-        cookies_text = os.getenv("YTDLP_COOKIES_TEXT")
-        if cookies_text and not self.cookies_path:
+        self.cookies_path = os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES")
+        # Support inline Netscape cookies passed via environment variable (YTDLP_COOKIES_TEXT or COOKIES)
+        cookies_text = os.getenv("YTDLP_COOKIES_TEXT") or os.getenv("COOKIES_TEXT")
+        if not cookies_text and self.cookies_path and "\n" in self.cookies_path:
+            cookies_text = self.cookies_path
+            self.cookies_path = None
+
+        if cookies_text:
             try:
-                tmp_cookie = "/tmp/ytdlp_cookies.txt"
+                tmp_cookie = "/tmp/cookies.txt"
                 with open(tmp_cookie, "w") as f:
                     f.write(cookies_text.strip())
                 self.cookies_path = tmp_cookie
-            except Exception:
-                pass
+                logger.info("Extractor: Loaded inline YouTube cookies into /tmp/cookies.txt")
+            except Exception as e:
+                logger.warning("Extractor: Could not write inline cookies: %s", str(e))
 
     def _get_ydl_opts(self) -> Dict[str, Any]:
         opts: Dict[str, Any] = {
@@ -151,6 +156,21 @@ class MediaExtractor:
         yt_meta = None
         if "youtu" in clean_input.lower():
             yt_meta = await loop.run_in_executor(None, self._extract_youtube_meta, clean_input)
+
+        # Step 1.5: If cookies are provided or direct YouTube URL supplied, attempt yt-dlp first
+        if self.cookies_path or "youtu" in clean_input.lower():
+            ytdl_track = await loop.run_in_executor(
+                None, self._extract_ytdlp, clean_input, is_url, requester_id, requester_name
+            )
+            if ytdl_track and ytdl_track.stream_url and ytdl_track.stream_url.startswith("http"):
+                if yt_meta and yt_meta.get("thumbnail"):
+                    ytdl_track.thumbnail = yt_meta["thumbnail"]
+                    if yt_meta.get("title"):
+                        ytdl_track.title = yt_meta["title"]
+                    if yt_meta.get("artist"):
+                        ytdl_track.artist = yt_meta["artist"]
+                logger.info("Extractor: Successfully extracted direct YouTube audio stream via yt-dlp")
+                return ytdl_track
 
         # Build clean search query for unblocked audio CDN lookups (JioSaavn / SoundCloud)
         clean_query = clean_input
