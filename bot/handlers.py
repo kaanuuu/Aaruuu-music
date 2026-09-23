@@ -69,7 +69,7 @@ async def process_update(update: Dict[str, Any]) -> None:
             args = parts[1] if len(parts) > 1 else ""
 
             if clean_cmd == "start":
-                await cmd.handle_start(message)
+                await cmd.handle_start(message, args)
             elif clean_cmd == "help":
                 await cmd.handle_help(message)
             elif clean_cmd == "play":

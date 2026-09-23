@@ -24,7 +24,65 @@ try:
     import pyrogram.errors
     import pyrogram.utils
 
-    # 1. Patch missing legacy errors that PyTgCalls imports from pyrogram.errors in Pyrogram v2
+    # 1. Missing TL Types & Classes for PyTgCalls (e.g. InputGroupCallSlug)
+    try:
+        import pyrogram.raw.types
+        import pyrogram.raw.base
+
+        class _InputGroupCallSlug:
+            ID = 0xDBBA8818
+            QUALNAME = "types.InputGroupCallSlug"
+
+            def __init__(self, slug: str = ""):
+                self.slug = slug
+
+            @classmethod
+            def read(cls, b, *args, **kwargs):
+                return cls()
+
+            def write(self, *args, **kwargs):
+                return b""
+
+        setattr(pyrogram.raw.types, "InputGroupCallSlug", _InputGroupCallSlug)
+        if hasattr(pyrogram.raw, "base"):
+            setattr(pyrogram.raw.base, "InputGroupCallSlug", _InputGroupCallSlug)
+
+        def _make_dummy_tl(name: str):
+            class _DynamicTL:
+                ID = 0
+                QUALNAME = f"types.{name}"
+
+                def __init__(self, *args, **kwargs):
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
+
+                @classmethod
+                def read(cls, *args, **kwargs):
+                    return cls()
+
+                def write(self, *args, **kwargs):
+                    return b""
+
+            _DynamicTL.__name__ = name
+            return _DynamicTL
+
+        def _patched_raw_types_getattr(name: str):
+            cls = _make_dummy_tl(name)
+            setattr(pyrogram.raw.types, name, cls)
+            return cls
+
+        pyrogram.raw.types.__getattr__ = _patched_raw_types_getattr
+
+        if hasattr(pyrogram.raw, "base"):
+            def _patched_raw_base_getattr(name: str):
+                cls = _make_dummy_tl(name)
+                setattr(pyrogram.raw.base, name, cls)
+                return cls
+            pyrogram.raw.base.__getattr__ = _patched_raw_base_getattr
+    except Exception:
+        pass
+
+    # 2. Patch missing legacy errors that PyTgCalls imports from pyrogram.errors in Pyrogram v2
     _legacy_exceptions = [
         "GroupcallForbidden",
         "GroupcallInvalid",
@@ -34,6 +92,7 @@ try:
         "GroupCallInvalid",
         "NoActiveGroupCall",
         "UserAlreadyParticipant",
+        "PhoneCallDiscarded",
     ]
     for _name in _legacy_exceptions:
         if not hasattr(pyrogram.errors, _name):
@@ -44,6 +103,13 @@ try:
                 setattr(pyrogram.errors.exceptions, _name, _exc)
             except Exception:
                 pass
+
+    def _patched_errors_getattr(name: str):
+        _exc = type(name, (Exception,), {})
+        setattr(pyrogram.errors, name, _exc)
+        return _exc
+
+    pyrogram.errors.__getattr__ = _patched_errors_getattr
 
     # 2. Modern Telegram 64-bit channel IDs patch (e.g. -1003952024411)
     if hasattr(pyrogram.utils, "MIN_CHANNEL_ID"):

@@ -46,10 +46,70 @@ COMMANDS_REGISTRY: List[Dict[str, str]] = [
 ]
 
 
-async def handle_start(message: Dict[str, Any]) -> None:
+async def handle_start(message: Dict[str, Any], args: str = "") -> None:
     chat_id = message["chat"]["id"]
     from_id = message.get("from", {}).get("id", 0)
-    rich_msg = build_start_rich_message("home", is_owner=is_sudo(from_id))
+    first_name = message.get("from", {}).get("first_name", "Friend")
+
+    # In group chats, show a concise rich greeting with quick-actions
+    if chat_id < 0:
+        group_welcome = (
+            f"👋 {to_bold_sans(f'HELLO {first_name.upper()}')}!\n\n"
+            f"⚡ {to_bold_sans('AARUU MUSIC')} is active & ready in this group.\n\n"
+            f"🎵 {to_bold_sans('HOW TO STREAM')}:\n"
+            f"1. Make sure group Voice Chat is started 🎧\n"
+            f"2. Send /play <song name> to stream immediately.\n\n"
+            f"Need full command help? Tap 'Help & Commands' below to open the interactive guide in PM!"
+        )
+        group_rich = {
+            "type": "rich_message",
+            "blocks": [
+                {
+                    "type": "heading",
+                    "text": to_bold_sans("AARUU MUSIC"),
+                    "size": 1,
+                },
+                {
+                    "type": "photo",
+                    "photo": {
+                        "type": "photo",
+                        "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+                    },
+                },
+                {
+                    "type": "paragraph",
+                    "text": group_welcome,
+                },
+                {
+                    "type": "buttons",
+                    "buttons": [
+                        {
+                            "text": "➕ ᴀᴅᴅ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ",
+                            "url": "https://t.me/Aaruu_musicbot?startgroup=true",
+                        },
+                        {
+                            "text": "💬 sᴜᴘᴘᴏʀᴛ",
+                            "url": "https://t.me/wzzkaanu",
+                        },
+                    ],
+                },
+                {
+                    "type": "buttons",
+                    "buttons": [
+                        {
+                            "text": "📖 ʜᴇʟᴘ & ᴄᴏᴍᴍᴀɴᴅs",
+                            "url": "https://t.me/Aaruu_musicbot?start=help",
+                        },
+                    ],
+                },
+            ],
+        }
+        await bot_api_client.send_rich_message(chat_id, group_rich)
+        return
+
+    # In private chat, show full interactive documentation guide
+    section = "getting_started" if "help" in args.lower() else "home"
+    rich_msg = build_start_rich_message(section, is_owner=is_sudo(from_id))
     await bot_api_client.send_rich_message(chat_id, rich_msg)
 
 

@@ -261,17 +261,26 @@ class TelegramAPIClient:
 
     # Internal fallbacks if telegram client/version doesn't support Rich Block protocol
     async def _fallback_send(self, chat_id: int, rich_message: Dict[str, Any]) -> Dict[str, Any]:
+        DEFAULT_BANNER = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
         text_content, thumbnail, inline_kb = self._extract_fallback_data(rich_message)
-        if thumbnail:
-            payload = {
-                "chat_id": chat_id,
-                "photo": thumbnail,
-                "caption": text_content,
-                "reply_markup": inline_kb,
-            }
-            res = await self.bot_api("sendPhoto", payload)
-            if res.get("ok"):
-                return res
+        primary_photo = thumbnail or DEFAULT_BANNER
+
+        payload = {
+            "chat_id": chat_id,
+            "photo": primary_photo,
+            "caption": text_content,
+            "reply_markup": inline_kb,
+        }
+        res = await self.bot_api("sendPhoto", payload)
+        if res.get("ok"):
+            return res
+
+        # If custom photo URL failed (e.g. YouTube CDN 403 or expired), retry with default banner
+        if primary_photo != DEFAULT_BANNER:
+            payload["photo"] = DEFAULT_BANNER
+            res_retry = await self.bot_api("sendPhoto", payload)
+            if res_retry.get("ok"):
+                return res_retry
 
         return await self.send_message(chat_id, text_content, parse_mode=None, reply_markup=inline_kb)
 
@@ -289,6 +298,15 @@ class TelegramAPIClient:
         if res.get("ok"):
             return res
         if "message is not modified" in str(res.get("description", "")).lower():
+            return {"ok": True, "result": True}
+
+        # Try editing reply markup only if caption update was rejected (e.g., identical caption)
+        res_markup = await self.bot_api("editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": inline_kb,
+        })
+        if res_markup.get("ok") or "message is not modified" in str(res_markup.get("description", "")).lower():
             return {"ok": True, "result": True}
 
         payload_txt = {

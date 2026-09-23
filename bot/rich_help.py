@@ -118,6 +118,13 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             "size": 1,
         },
         {
+            "type": "photo",
+            "photo": {
+                "type": "photo",
+                "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+            },
+        },
+        {
             "type": "paragraph",
             "text": text,
         },
