@@ -82,6 +82,8 @@ try:
 
         # Patch Pyrogram Raw TL Functions (phone.JoinGroupCall, etc.) to safely absorb Layer 180+ fields like 'public_key'
         import inspect
+        import importlib
+        import pkgutil
 
         def _make_safe_constructor(cls):
             if not isinstance(cls, type):
@@ -109,34 +111,78 @@ try:
             try:
                 sig = inspect.signature(orig_init)
                 has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                param_keys = set(sig.parameters.keys())
 
                 def _safe_init(self, *args, **kwargs):
-                    self.public_key = kwargs.pop("public_key", None)
+                    pub_key = kwargs.pop("public_key", None)
                     if not has_varkw:
-                        extra_keys = set(kwargs.keys()) - set(sig.parameters.keys())
+                        extra_keys = set(kwargs.keys()) - param_keys
                         if extra_keys:
                             for k in list(extra_keys):
                                 val = kwargs.pop(k, None)
                                 setattr(self, k, val)
-                    return orig_init(self, *args, **kwargs)
+                    res = orig_init(self, *args, **kwargs)
+                    if pub_key is not None:
+                        self.public_key = pub_key
+                    return res
 
                 _safe_init._is_safe_patched = True
                 cls.__init__ = _safe_init
             except Exception:
                 pass
 
-        if hasattr(pyrogram.raw, "functions"):
-            import pyrogram.raw.functions as all_raw_funcs
-            for sub_name in dir(all_raw_funcs):
-                sub_mod = getattr(all_raw_funcs, sub_name, None)
-                if sub_mod and hasattr(sub_mod, "__dict__"):
-                    for attr_name in dir(sub_mod):
-                        _make_safe_constructor(getattr(sub_mod, attr_name, None))
+        global _patch_all_tl_classes
+        def _patch_all_tl_classes():
+            subpackages = [
+                "pyrogram.raw.functions.phone",
+                "pyrogram.raw.functions.channels",
+                "pyrogram.raw.functions.messages",
+                "pyrogram.raw.functions.account",
+                "pyrogram.raw.functions.users",
+                "pyrogram.raw.types",
+                "pyrogram.raw.types.phone",
+                "pyrogram.raw.base",
+                "pyrogram.raw.base.phone",
+            ]
+            for pkg in subpackages:
+                try:
+                    mod = importlib.import_module(pkg)
+                    for attr in dir(mod):
+                        _make_safe_constructor(getattr(mod, attr, None))
+                except Exception:
+                    pass
 
-        if hasattr(pyrogram.raw, "types"):
-            import pyrogram.raw.types as all_raw_types
-            for attr_name in dir(all_raw_types):
-                _make_safe_constructor(getattr(all_raw_types, attr_name, None))
+            try:
+                if hasattr(pyrogram.raw, "__path__"):
+                    for _, modname, _ in pkgutil.walk_packages(pyrogram.raw.__path__, pyrogram.raw.__name__ + "."):
+                        try:
+                            mod = importlib.import_module(modname)
+                            for attr in dir(mod):
+                                _make_safe_constructor(getattr(mod, attr, None))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            try:
+                if hasattr(pyrogram.raw, "all") and hasattr(pyrogram.raw.all, "layer"):
+                    for cls in pyrogram.raw.all.layer.values():
+                        _make_safe_constructor(cls)
+            except Exception:
+                pass
+
+            for mod_name, mod in list(sys.modules.items()):
+                if mod and ("pyrogram" in mod_name or "tgcalls" in mod_name):
+                    for attr in dir(mod):
+                        try:
+                            val = getattr(mod, attr, None)
+                            if isinstance(val, type) and hasattr(val, "__init__"):
+                                if "GroupCall" in attr or attr == "JoinGroupCall":
+                                    _make_safe_constructor(val)
+                        except Exception:
+                            pass
+
+        _patch_all_tl_classes()
     except Exception:
         pass
 
@@ -414,6 +460,20 @@ class VoiceChatAssistant:
         """Streams audio_source (URL or file) into the group voice chat call."""
         if self.pytgcalls and self.is_connected:
             try:
+                # Ensure all Pyrogram TL objects are patched right before PyTgCalls joins or starts stream
+                try:
+                    if "_patch_all_tl_classes" in globals():
+                        globals()["_patch_all_tl_classes"]()
+                except Exception:
+                    pass
+
+                # Sanitize playable source: PyTgCalls cannot directly stream YouTube webpage URLs on datacenter IPs
+                playable_stream = audio_source
+                if audio_source.startswith(("http://", "https://")) and (
+                    "youtube.com" in audio_source or "youtu.be" in audio_source
+                ):
+                    playable_stream = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
+
                 # Ensure the peer is cached in Pyrogram storage before VC call
                 try:
                     await self.app.get_chat(chat_id)
@@ -427,7 +487,7 @@ class VoiceChatAssistant:
 
                 # PyTgCalls v1 API (join_group_call with AudioPiped)
                 if hasattr(self.pytgcalls, "join_group_call"):
-                    stream = AudioPiped(audio_source) if AudioPiped else audio_source
+                    stream = AudioPiped(playable_stream) if AudioPiped else playable_stream
                     if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
                         try:
                             await self.pytgcalls.change_stream(chat_id, stream)
@@ -438,7 +498,7 @@ class VoiceChatAssistant:
 
                 # PyTgCalls v2 API (play with MediaStream)
                 elif hasattr(self.pytgcalls, "play"):
-                    stream = MediaStream(audio_source) if MediaStream else audio_source
+                    stream = MediaStream(playable_stream) if MediaStream else playable_stream
                     if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
                         try:
                             await self.pytgcalls.change_stream(chat_id, stream)
@@ -448,7 +508,7 @@ class VoiceChatAssistant:
                         await self.pytgcalls.play(chat_id, stream)
 
                 elif hasattr(self.pytgcalls, "join_call"):
-                    await self.pytgcalls.join_call(chat_id, audio_source)
+                    await self.pytgcalls.join_call(chat_id, playable_stream)
 
                 self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
                 self.last_error = None

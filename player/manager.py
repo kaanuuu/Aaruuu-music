@@ -60,7 +60,7 @@ class PlayerManager:
 
             if not state.is_playing:
                 state.play(track, requester)
-                await voice_assistant.play_audio(chat_id, track.source_url)
+                await voice_assistant.play_audio(chat_id, track.playable_source)
                 logger.info("Chat %s: Now playing '%s'", chat_id, track.title)
                 return True, state, queue
             else:
@@ -106,7 +106,7 @@ class PlayerManager:
                 return False, "This player is no longer active."
             state.replay()
             if state.current_track:
-                await voice_assistant.play_audio(chat_id, state.current_track.source_url)
+                await voice_assistant.play_audio(chat_id, state.current_track.playable_source)
             return True, "Replaying current track."
 
     async def skip(
@@ -131,7 +131,7 @@ class PlayerManager:
             # Handle loop mode
             if old_track and state.loop_mode == "track":
                 state.play(old_track, state.requested_by)
-                await voice_assistant.play_audio(chat_id, old_track.source_url)
+                await voice_assistant.play_audio(chat_id, old_track.playable_source)
                 return old_track, f"Looping track: {old_track.title}"
             elif old_track and state.loop_mode == "queue":
                 queue.add(old_track)
@@ -139,7 +139,7 @@ class PlayerManager:
             next_track = queue.pop()
             if next_track:
                 state.play(next_track, {"user_id": next_track.requester_user_id, "name": next_track.requester_name})
-                await voice_assistant.play_audio(chat_id, next_track.source_url)
+                await voice_assistant.play_audio(chat_id, next_track.playable_source)
                 return next_track, f"Skipped to: {next_track.title}"
             else:
                 state.stop()

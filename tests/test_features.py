@@ -219,6 +219,35 @@ class TestExtendedFeatures(unittest.TestCase):
         call2 = DummyJoinGroupCall("c2", "j2", "p2", public_key=b"test_key_123")
         self.assertEqual(call2.public_key, b"test_key_123")
 
+    def test_track_stream_url_and_playable_source(self):
+        from player.models import Track
+        t1 = Track(
+            track_id="t1",
+            title="Song 1",
+            artist="Artist 1",
+            duration=180,
+            thumbnail="https://example.com/thumb.jpg",
+            source_url="https://youtube.com/watch?v=123",
+            stream_url="https://cdn.example.com/audio.mp3",
+            requester_user_id=123,
+            requester_name="User",
+        )
+        self.assertEqual(t1.playable_source, "https://cdn.example.com/audio.mp3")
+        self.assertEqual(t1.to_dict()["stream_url"], "https://cdn.example.com/audio.mp3")
+
+        # Fallback to source_url if stream_url is None
+        t2 = Track(
+            track_id="t2",
+            title="Song 2",
+            artist="Artist 2",
+            duration=180,
+            thumbnail="https://example.com/thumb.jpg",
+            source_url="https://example.com/music.mp3",
+            requester_user_id=123,
+            requester_name="User",
+        )
+        self.assertEqual(t2.playable_source, "https://example.com/music.mp3")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -103,6 +103,91 @@ try:
                 setattr(pyrogram.raw.base, name, cls)
                 return cls
             pyrogram.raw.base.__getattr__ = _patched_raw_base_getattr
+
+        import inspect
+        import importlib
+        import pkgutil
+
+        def _make_safe_constructor(cls):
+            if not isinstance(cls, type):
+                return
+            if not hasattr(cls, "public_key"):
+                setattr(cls, "public_key", None)
+
+            orig_getattr = getattr(cls, "__getattr__", None)
+            def _safe_getattr(self, name):
+                if name in ("public_key", "block", "video_stopped", "muted", "invite_hash"):
+                    return None
+                if orig_getattr:
+                    return orig_getattr(self, name)
+                raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+            cls.__getattr__ = _safe_getattr
+
+            if not hasattr(cls, "__init__"):
+                return
+            orig_init = cls.__init__
+            if getattr(orig_init, "_is_safe_patched", False):
+                return
+            try:
+                sig = inspect.signature(orig_init)
+                has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                param_keys = set(sig.parameters.keys())
+
+                def _safe_init(self, *args, **kwargs):
+                    pub_key = kwargs.pop("public_key", None)
+                    if not has_varkw:
+                        extra_keys = set(kwargs.keys()) - param_keys
+                        if extra_keys:
+                            for k in list(extra_keys):
+                                val = kwargs.pop(k, None)
+                                setattr(self, k, val)
+                    res = orig_init(self, *args, **kwargs)
+                    if pub_key is not None:
+                        self.public_key = pub_key
+                    return res
+
+                _safe_init._is_safe_patched = True
+                cls.__init__ = _safe_init
+            except Exception:
+                pass
+
+        subpackages = [
+            "pyrogram.raw.functions.phone",
+            "pyrogram.raw.functions.channels",
+            "pyrogram.raw.functions.messages",
+            "pyrogram.raw.functions.account",
+            "pyrogram.raw.functions.users",
+            "pyrogram.raw.types",
+            "pyrogram.raw.types.phone",
+            "pyrogram.raw.base",
+            "pyrogram.raw.base.phone",
+        ]
+        for pkg in subpackages:
+            try:
+                mod = importlib.import_module(pkg)
+                for attr in dir(mod):
+                    _make_safe_constructor(getattr(mod, attr, None))
+            except Exception:
+                pass
+
+        try:
+            if hasattr(pyrogram.raw, "__path__"):
+                for _, modname, _ in pkgutil.walk_packages(pyrogram.raw.__path__, pyrogram.raw.__name__ + "."):
+                    try:
+                        mod = importlib.import_module(modname)
+                        for attr in dir(mod):
+                            _make_safe_constructor(getattr(mod, attr, None))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            if hasattr(pyrogram.raw, "all") and hasattr(pyrogram.raw.all, "layer"):
+                for cls in pyrogram.raw.all.layer.values():
+                    _make_safe_constructor(cls)
+        except Exception:
+            pass
     except Exception:
         pass
 

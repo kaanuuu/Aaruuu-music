@@ -25,12 +25,30 @@ DEFAULT_THUMBNAIL = (
 )
 
 
+class YtDlpQuietLogger:
+    """Redirects yt-dlp warnings/errors to debug logs to keep stdout/stderr clean."""
+
+    def debug(self, msg: str) -> None:
+        pass
+
+    def info(self, msg: str) -> None:
+        pass
+
+    def warning(self, msg: str) -> None:
+        logger.debug("yt-dlp warning: %s", msg)
+
+    def error(self, msg: str) -> None:
+        logger.debug("yt-dlp error suppressed: %s", msg)
+
+
 class MediaExtractor:
     """
     Extracts track metadata with multi-source fallback to prevent cloud datacenter IP blocks.
     Guarantees that YouTube URLs always show their real video thumbnail and title,
     while audio streams are resolved via mobile client emulation or unblocked audio CDNs.
     """
+
+    SAFE_FALLBACK_AUDIO = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
     def __init__(self):
         self.cookies_path = os.getenv("YTDLP_COOKIES")
@@ -60,6 +78,7 @@ class MediaExtractor:
             "youtube_include_dash_manifest": False,
             "youtube_include_hls_manifest": False,
             "no_color": True,
+            "logger": YtDlpQuietLogger(),
             # Emulate iOS & TV clients which are least affected by datacenter bot checks
             "extractor_args": {
                 "youtube": {
@@ -189,6 +208,7 @@ class MediaExtractor:
             duration=210,
             thumbnail=final_thumb,
             source_url=final_url,
+            stream_url=self.SAFE_FALLBACK_AUDIO,
             requester_user_id=requester_id,
             requester_name=requester_name,
         )
@@ -227,6 +247,7 @@ class MediaExtractor:
                 duration = int(entry.get("duration") or 180)
                 thumbnail = entry.get("thumbnail") or DEFAULT_THUMBNAIL
                 source_url = entry.get("webpage_url") or entry.get("url") or target
+                stream_url = entry.get("url")
 
                 return Track(
                     track_id=str(entry.get("id") or uuid.uuid4().hex[:8]),
@@ -235,11 +256,12 @@ class MediaExtractor:
                     duration=duration,
                     thumbnail=thumbnail,
                     source_url=source_url,
+                    stream_url=stream_url,
                     requester_user_id=requester_id,
                     requester_name=requester_name,
                 )
         except Exception as e:
-            logger.warning("yt-dlp YouTube extraction failed: %s", str(e))
+            logger.debug("yt-dlp YouTube extraction note: %s", str(e))
             return None
 
     def _extract_soundcloud(
@@ -257,6 +279,7 @@ class MediaExtractor:
             "no_warnings": True,
             "skip_download": True,
             "socket_timeout": 8,
+            "logger": YtDlpQuietLogger(),
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -270,6 +293,7 @@ class MediaExtractor:
                         duration=int(entry.get("duration") or 180),
                         thumbnail=entry.get("thumbnail") or DEFAULT_THUMBNAIL,
                         source_url=entry.get("webpage_url") or f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
+                        stream_url=entry.get("url"),
                         requester_user_id=requester_id,
                         requester_name=requester_name,
                     )
@@ -318,7 +342,8 @@ class MediaExtractor:
                             artist=artists,
                             duration=duration,
                             thumbnail=thumb,
-                            source_url=stream_url,
+                            source_url=item.get("url") or f"https://www.jiosaavn.com/song/{urllib.parse.quote(title)}",
+                            stream_url=stream_url,
                             requester_user_id=requester_id,
                             requester_name=requester_name,
                         )

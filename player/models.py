@@ -21,7 +21,13 @@ class Track:
     source_url: str
     requester_user_id: int
     requester_name: str
+    stream_url: Optional[str] = None
     created_at: float = field(default_factory=time.time)
+
+    @property
+    def playable_source(self) -> str:
+        """Returns direct audio stream URL if resolved, else source_url."""
+        return self.stream_url or self.source_url
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -31,6 +37,7 @@ class Track:
             "duration": self.duration,
             "thumbnail": self.thumbnail,
             "source_url": self.source_url,
+            "stream_url": self.stream_url,
             "requester_user_id": self.requester_user_id,
             "requester_name": self.requester_name,
             "created_at": self.created_at,
