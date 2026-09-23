@@ -157,6 +157,22 @@ try:
         return int(f"-100{peer_id}")
 
     pyrogram.utils.get_channel_id = _safe_get_channel_id
+
+    # 4. Prevent un-cached peer updates from crashing Pyrogram's handle_updates task
+    if hasattr(pyrogram, "Client"):
+        _orig_handle_updates = getattr(pyrogram.Client, "handle_updates", None)
+        if _orig_handle_updates:
+            async def _safe_handle_updates(self, updates):
+                try:
+                    await _orig_handle_updates(self, updates)
+                except Exception as exc:
+                    exc_str = str(exc).lower()
+                    if "peer_id_invalid" in exc_str or "id not found" in exc_str or "peeridinvalid" in type(exc).__name__.lower():
+                        pass
+                    else:
+                        pass
+
+            pyrogram.Client.handle_updates = _safe_handle_updates
 except Exception:
     pass
 

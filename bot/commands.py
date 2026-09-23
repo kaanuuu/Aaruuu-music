@@ -195,6 +195,50 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
     if status_msg_id:
         await bot_api_client.delete_message(chat_id, status_msg_id)
 
+    # If PyTgCalls encountered an active VC error (e.g. VC not started in group)
+    if is_now_playing and voice_assistant.last_error:
+        err_lower = voice_assistant.last_error.lower()
+        if any(term in err_lower for term in ("creategroupcall", "channel_invalid", "noactivegroupcall", "groupcallnotfound", "call_not_found", "chat_admin_required")):
+            asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
+            vc_alert = {
+                "type": "rich_message",
+                "blocks": [
+                    {
+                        "type": "heading",
+                        "text": to_bold_sans("VOICE CHAT NOT ACTIVE"),
+                        "size": 1,
+                    },
+                    {
+                        "type": "photo",
+                        "photo": {
+                            "type": "photo",
+                            "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+                        },
+                    },
+                    {
+                        "type": "paragraph",
+                        "text": (
+                            f"⚠️ {to_bold_sans('GROUP VOICE CHAT IS NOT STARTED')}\n\n"
+                            f"Assistant {asst_tag} is in this group, but the group Voice Chat is not active yet!\n\n"
+                            f"👉 {to_bold_sans('HOW TO START')}:\n"
+                            f"1. Tap the group profile / header at top.\n"
+                            f"2. Tap the 3-dots (⋮) -> tap {to_bold_sans('Start Video Chat / Voice Chat')}.\n"
+                            f"3. (Optional) Promote {asst_tag} to Admin with 'Manage Video Chats' permission.\n\n"
+                            f"Once Voice Chat is running in the group, send /play again to stream live! 🎵"
+                        ),
+                    },
+                    {
+                        "type": "buttons",
+                        "buttons": [
+                            {"text": "💬 " + to_small_caps("support"), "url": "https://t.me/wzzkaanu"},
+                        ],
+                    },
+                ],
+            }
+            state.stop()
+            await bot_api_client.send_rich_message(chat_id, vc_alert)
+            return
+
     if is_now_playing:
         rich_player = build_player_rich_message(state, queue)
         send_res = await bot_api_client.send_rich_message(chat_id, rich_player)

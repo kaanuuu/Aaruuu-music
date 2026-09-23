@@ -296,6 +296,14 @@ class VoiceChatAssistant:
                     self.assistant_id,
                     self.assistant_name,
                 )
+                # Pre-cache assistant's existing dialogs and access hashes into SQLite storage
+                try:
+                    logger.info("Voice Chat: Pre-caching assistant dialogs and access hashes...")
+                    async for dialog in self.app.get_dialogs(limit=200):
+                        pass
+                    logger.info("Voice Chat: Assistant dialogs pre-cached successfully.")
+                except Exception as d_err:
+                    logger.debug("Voice Chat: Dialog pre-caching note: %s", str(d_err))
             except Exception as e:
                 logger.warning("Voice Chat: Could not fetch assistant profile: %s", str(e))
                 self.is_connected = True
@@ -321,13 +329,21 @@ class VoiceChatAssistant:
         if not self.app or not self.is_connected:
             return False
         try:
-            await self.app.join_chat(chat_id_or_invite_link)
+            chat = await self.app.join_chat(chat_id_or_invite_link)
             logger.info("Voice Chat: Assistant successfully joined chat %s", chat_id_or_invite_link)
+            try:
+                await self.app.get_chat(chat.id)
+            except Exception:
+                pass
             return True
         except Exception as e:
             err_str = str(e)
             if "USER_ALREADY_PARTICIPANT" in err_str:
                 logger.info("Voice Chat: Assistant is already a participant of %s", chat_id_or_invite_link)
+                try:
+                    await self.app.get_chat(chat_id_or_invite_link)
+                except Exception:
+                    pass
                 return True
             logger.warning(
                 "Voice Chat: Assistant failed to join chat %s: %s",
@@ -340,6 +356,12 @@ class VoiceChatAssistant:
         """Streams audio_source (URL or file) into the group voice chat call."""
         if self.pytgcalls and self.is_connected:
             try:
+                # Ensure the peer is cached in Pyrogram storage before VC call
+                try:
+                    await self.app.get_chat(chat_id)
+                except Exception:
+                    pass
+
                 logger.info(
                     "Voice Chat: PyTgCalls joining VC call in chat %s with audio source...",
                     chat_id,
@@ -371,16 +393,21 @@ class VoiceChatAssistant:
                     await self.pytgcalls.join_call(chat_id, audio_source)
 
                 self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
+                self.last_error = None
                 return True
             except Exception as e:
+                err_text = str(e)
+                self.last_error = err_text
                 logger.error(
                     "Voice Chat: PyTgCalls error playing audio in chat %s: %s",
                     chat_id,
-                    str(e),
+                    err_text,
                 )
+                return False
 
         logger.debug("Voice Chat: Playing track in chat %s (UI mode active)", chat_id)
         self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
+        self.last_error = None
         return True
 
     async def pause_audio(self, chat_id: int) -> bool:
