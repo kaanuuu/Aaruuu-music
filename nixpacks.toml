@@ -2,17 +2,19 @@ providers = ["python"]
 
 [variables]
 PATH = "/app/.venv/bin:/opt/venv/bin:$PATH"
+PYTHONPATH = "/app:/opt/venv/lib/python3.12/site-packages:/app/.venv/lib/python3.12/site-packages"
 
 [phases.setup]
 nixPkgs = ["python3", "python3Packages.pip", "ffmpeg", "gcc"]
 
 [phases.install]
 cmds = [
-  "python3 -m venv /app/.venv",
-  "/app/.venv/bin/pip install --break-system-packages -r requirements.txt",
-  "mkdir -p /opt/venv/bin",
-  "ln -sf /app/.venv/bin/python /opt/venv/bin/python",
-  "ln -sf /app/.venv/bin/pip /opt/venv/bin/pip"
+  "python3 -m pip install --break-system-packages -r requirements.txt || true",
+  "python3 -m venv --system-site-packages /app/.venv || true",
+  "/app/.venv/bin/pip install --break-system-packages -r requirements.txt || true",
+  "mkdir -p /opt/venv/bin || true",
+  "ln -sf /app/.venv/bin/python /opt/venv/bin/python || true",
+  "ln -sf /app/.venv/bin/pip /opt/venv/bin/pip || true"
 ]
 
 [start]

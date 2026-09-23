@@ -7,10 +7,20 @@ import asyncio
 import os
 import signal
 import sys
-from dotenv import load_dotenv
-
-# 1. Load environment variables
-load_dotenv()
+# 1. Load environment variables with resilient fallback
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Cloud environments (Railway, Render, Heroku) inject variables directly into os.environ.
+    # We also manually parse .env if present so python-dotenv is never a hard failure point.
+    if os.path.exists(".env"):
+        with open(".env", "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
 
 from bot.api import bot_api_client
 from bot.commands import COMMANDS_REGISTRY

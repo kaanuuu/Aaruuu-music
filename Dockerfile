@@ -11,22 +11,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Create virtual environment at /opt/venv
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Install Python dependencies
+# Copy requirements
 COPY requirements.txt .
+
+# 1. Install dependencies into system Python directly
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+# 2. Also create /opt/venv with system packages included
+RUN python3 -m venv --system-site-packages /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+# 3. Create /app/.venv as well
+RUN python3 -m venv --system-site-packages /app/.venv && \
+    /app/.venv/bin/pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY . .
 
-# Create symlinks so python is accessible from /opt/venv, /app/.venv, and system PATH
-RUN mkdir -p /app/.venv/bin && \
-    ln -sf /opt/venv/bin/python /app/.venv/bin/python && \
-    ln -sf /opt/venv/bin/pip /app/.venv/bin/pip && \
-    chmod +x start.sh
+# Ensure start.sh has executable permissions
+RUN chmod +x start.sh
+
+ENV PATH="/opt/venv/bin:/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app:/opt/venv/lib/python3.11/site-packages:/app/.venv/lib/python3.11/site-packages:/usr/local/lib/python3.11/site-packages"
 
 CMD ["bash", "start.sh"]
