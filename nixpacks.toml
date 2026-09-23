@@ -1,15 +1,18 @@
 providers = ["python"]
 
 [variables]
-PATH = "/opt/venv/bin:$PATH"
+PATH = "/app/.venv/bin:/opt/venv/bin:$PATH"
 
 [phases.setup]
 nixPkgs = ["python3", "python3Packages.pip", "ffmpeg", "gcc"]
 
 [phases.install]
 cmds = [
-  "python3 -m venv /opt/venv",
-  "/opt/venv/bin/pip install --break-system-packages -r requirements.txt"
+  "python3 -m venv /app/.venv",
+  "/app/.venv/bin/pip install --break-system-packages -r requirements.txt",
+  "mkdir -p /opt/venv/bin",
+  "ln -sf /app/.venv/bin/python /opt/venv/bin/python",
+  "ln -sf /app/.venv/bin/pip /opt/venv/bin/pip"
 ]
 
 [start]
