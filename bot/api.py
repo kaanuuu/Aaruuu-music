@@ -309,8 +309,10 @@ class TelegramAPIClient:
     async def _fallback_edit(
         self, chat_id: int, message_id: int, rich_message: Dict[str, Any]
     ) -> Dict[str, Any]:
-        text_content, _, inline_kb = self._extract_fallback_data(rich_message)
+        text_content, thumbnail, inline_kb = self._extract_fallback_data(rich_message)
         safe_caption = text_content[:1000] if len(text_content) > 1000 else text_content
+        DEFAULT_BANNER = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
+        primary_photo = thumbnail or DEFAULT_BANNER
 
         # 1. Try editing photo caption & reply markup
         payload_cap = {
@@ -326,21 +328,24 @@ class TelegramAPIClient:
         if "message is not modified" in desc:
             return {"ok": True, "result": True}
 
-        # 2. Try editing standard message text & reply markup
-        payload_txt = {
+        # 2. Try editing media (photo + caption + reply markup) in-place
+        payload_media = {
             "chat_id": chat_id,
             "message_id": message_id,
-            "text": text_content,
+            "media": {
+                "type": "photo",
+                "media": primary_photo,
+                "caption": safe_caption,
+            },
             "reply_markup": inline_kb,
         }
-        res_txt = await self.bot_api("editMessageText", payload_txt)
-        if res_txt.get("ok"):
-            return res_txt
-        desc_txt = str(res_txt.get("description", "")).lower()
-        if "message is not modified" in desc_txt:
+        res_media = await self.bot_api("editMessageMedia", payload_media)
+        if res_media.get("ok"):
+            return res_media
+        if "message is not modified" in str(res_media.get("description", "")).lower():
             return {"ok": True, "result": True}
 
-        # 3. Try editing reply markup alone
+        # 3. Try editing reply markup alone (updates buttons without touching media/caption)
         res_markup = await self.bot_api("editMessageReplyMarkup", {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -349,13 +354,20 @@ class TelegramAPIClient:
         if res_markup.get("ok") or "message is not modified" in str(res_markup.get("description", "")).lower():
             return {"ok": True, "result": True}
 
-        # 4. If editing completely fails (e.g. incompatible type), post fresh card & delete old card to avoid orphan keyboards
-        send_res = await self._fallback_send(chat_id, rich_message)
-        if send_res.get("ok"):
-            asyncio.create_task(self.delete_message(chat_id, message_id))
-            return send_res
+        # 4. Try editing standard text message if sent as text
+        payload_txt = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text_content,
+            "reply_markup": inline_kb,
+        }
+        res_txt = await self.bot_api("editMessageText", payload_txt)
+        if res_txt.get("ok") or "message is not modified" in str(res_txt.get("description", "")).lower():
+            return {"ok": True, "result": True}
 
-        return res
+        # 5. Only if message cannot be edited in-place, delete the old message FIRST synchronously to prevent duplicate keyboards
+        await self.delete_message(chat_id, message_id)
+        return await self._fallback_send(chat_id, rich_message)
 
     def _extract_fallback_data(self, rich_message: Dict[str, Any]):
         texts: List[str] = []

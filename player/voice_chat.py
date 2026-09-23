@@ -476,11 +476,22 @@ class VoiceChatAssistant:
                 ):
                     playable_stream = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
-                # Robust peer caching in Pyrogram storage before VC call
+                # Fast peer verification & access hash caching before PyTgCalls call
+                peer_cached = False
                 try:
                     await self.app.get_chat(chat_id)
+                    peer_cached = True
                 except Exception as peer_err:
-                    logger.info("Voice Chat: Direct get_chat(%s) note: %s. Resolving peer via invite link...", chat_id, str(peer_err))
+                    logger.info("Voice Chat: get_chat(%s) note: %s. Scanning assistant dialogs for access hash...", chat_id, str(peer_err))
+                    try:
+                        async for dialog in self.app.get_dialogs(limit=300):
+                            if dialog.chat and dialog.chat.id == chat_id:
+                                peer_cached = True
+                                break
+                    except Exception as d_err:
+                        logger.debug("Voice Chat: get_dialogs scan note: %s", str(d_err))
+
+                if not peer_cached:
                     try:
                         from bot.api import bot_api_client
                         inv_res = await bot_api_client.export_chat_invite_link(chat_id)
@@ -488,8 +499,20 @@ class VoiceChatAssistant:
                         if inv_link:
                             await self.app.join_chat(inv_link)
                             await self.app.get_chat(chat_id)
+                            peer_cached = True
                     except Exception as inv_err:
                         logger.debug("Voice Chat: Invite link peer resolution note: %s", str(inv_err))
+
+                # If peer is still not resolved/cached, assistant is not in group — fail instantly in 0.1s instead of hanging MTProto for 48s!
+                if not peer_cached:
+                    try:
+                        await self.app.get_chat(chat_id)
+                        peer_cached = True
+                    except Exception:
+                        asst_tag = f"@{self.assistant_username}" if self.assistant_username else "Assistant"
+                        self.last_error = f"ASSISTANT NOT IN GROUP - Please add {asst_tag} to this group and start Voice Chat."
+                        logger.warning("Voice Chat: Aborting PyTgCalls join - assistant is not in group %s", chat_id)
+                        return False
 
                 logger.info(
                     "Voice Chat: PyTgCalls joining VC call in chat %s with audio source...",
