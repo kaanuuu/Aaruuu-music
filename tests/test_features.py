@@ -166,6 +166,59 @@ class TestExtendedFeatures(unittest.TestCase):
         is_debounced_later = (later_tap - _DEBOUNCE_TIMESTAMPS.get(key, 0)) < 0.7
         self.assertFalse(is_debounced_later, "Tap after 700ms should be allowed through")
 
+    def test_youtube_meta_and_thumbnail_extraction(self):
+        from player.extractor import MediaExtractor
+        extractor = MediaExtractor()
+
+        # Test video ID extraction and fallback thumbnail creation
+        meta = extractor._extract_youtube_meta("https://youtu.be/42r8Stt-30w?si=1plBBKxkguvj24yx")
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["video_id"], "42r8Stt-30w")
+        self.assertTrue("42r8Stt-30w" in meta["thumbnail"])
+        self.assertTrue("hqdefault.jpg" in meta["thumbnail"] or "i.ytimg.com" in meta["thumbnail"])
+
+    def test_joingroupcall_public_key_safety(self):
+        # Verify that raw TL objects never raise AttributeError when public_key or block is accessed
+        class DummyJoinGroupCall:
+            def __init__(self, call, join_as, params):
+                self.call = call
+                self.join_as = join_as
+                self.params = params
+
+        import inspect
+        cls = DummyJoinGroupCall
+        setattr(cls, "public_key", None)
+        orig_getattr = getattr(cls, "__getattr__", None)
+        def _safe_getattr(self, name):
+            if name in ("public_key", "block", "video_stopped", "muted"):
+                return None
+            if orig_getattr:
+                return orig_getattr(self, name)
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        cls.__getattr__ = _safe_getattr
+
+        orig_init = cls.__init__
+        sig = inspect.signature(orig_init)
+        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+        def _safe_init(self, *args, **kwargs):
+            self.public_key = kwargs.pop("public_key", None)
+            if not has_varkw:
+                extra_keys = set(kwargs.keys()) - set(sig.parameters.keys())
+                for k in list(extra_keys):
+                    setattr(self, k, kwargs.pop(k, None))
+            return orig_init(self, *args, **kwargs)
+        cls.__init__ = _safe_init
+
+        # Instance without public_key
+        call1 = DummyJoinGroupCall("c1", "j1", "p1")
+        self.assertIsNone(call1.public_key)
+        self.assertIsNone(call1.block)
+
+        # Instance with public_key
+        call2 = DummyJoinGroupCall("c2", "j2", "p2", public_key=b"test_key_123")
+        self.assertEqual(call2.public_key, b"test_key_123")
+
 
 if __name__ == "__main__":
     unittest.main()

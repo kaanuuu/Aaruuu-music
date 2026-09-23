@@ -178,7 +178,24 @@ try:
     import inspect
 
     def _make_safe_constructor(cls):
-        if not isinstance(cls, type) or not hasattr(cls, "__init__"):
+        if not isinstance(cls, type):
+            return
+        # 1. Guarantee public_key attribute exists on the class
+        if not hasattr(cls, "public_key"):
+            setattr(cls, "public_key", None)
+
+        # 2. Add safe __getattr__ on the class for any other missing TL fields
+        orig_getattr = getattr(cls, "__getattr__", None)
+        def _safe_getattr(self, name):
+            if name in ("public_key", "block", "video_stopped", "muted", "invite_hash"):
+                return None
+            if orig_getattr:
+                return orig_getattr(self, name)
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        cls.__getattr__ = _safe_getattr
+
+        # 3. Patch __init__ to absorb extra kwargs and initialize public_key
+        if not hasattr(cls, "__init__"):
             return
         orig_init = cls.__init__
         if getattr(orig_init, "_is_safe_patched", False):
@@ -188,6 +205,7 @@ try:
             has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
             def _safe_init(self, *args, **kwargs):
+                self.public_key = kwargs.pop("public_key", None)
                 if not has_varkw:
                     extra_keys = set(kwargs.keys()) - set(sig.parameters.keys())
                     if extra_keys:
