@@ -144,17 +144,9 @@ class TelegramAPIClient:
         Sends native Rich Message using Telegram Bot API.
         Delivers sleek photo card with pure Unicode typography and in-bubble round corner buttons.
         """
-        # Primary: native sendRichMessage block protocol with in-bubble rounded buttons
         res = await self.bot_api("sendRichMessage", {"chat_id": chat_id, "rich_message": rich_message})
         if res.get("ok"):
             return res
-
-        # Direct root payload format
-        res_direct = await self.bot_api("sendRichMessage", {"chat_id": chat_id, **rich_message})
-        if res_direct.get("ok"):
-            return res_direct
-
-        # Only fallback if sendRichMessage is not recognized by the Telegram endpoint
         return await self._fallback_send(chat_id, rich_message)
 
     async def edit_message_rich_text(
@@ -162,8 +154,9 @@ class TelegramAPIClient:
     ) -> Dict[str, Any]:
         """
         Edits an existing native Rich Message card with updated content and round corner buttons.
-        Guarantees that double-tapping or rapid clicking never degrades to standard inline keyboard.
+        Guarantees instant response and prevents double-taps from breaking the UI.
         """
+        # Try native editMessageRichText if supported by Telegram endpoint
         res = await self.bot_api(
             "editMessageRichText",
             {"chat_id": chat_id, "message_id": message_id, "rich_message": rich_message},
@@ -175,18 +168,8 @@ class TelegramAPIClient:
         if "message is not modified" in desc:
             return {"ok": True, "result": True}
 
-        res_direct = await self.bot_api(
-            "editMessageRichText",
-            {"chat_id": chat_id, "message_id": message_id, **rich_message},
-        )
-        if res_direct.get("ok"):
-            return res_direct
-        if "message is not modified" in str(res_direct.get("description", "")).lower():
-            return {"ok": True, "result": True}
-
-        # Do NOT revert to standard inline keyboard if the message was already a Rich Message
-        logger.debug("editMessageRichText note: %s", desc)
-        return res
+        # Fallback to updating the media card with its embedded round-corner buttons
+        return await self._fallback_edit(chat_id, message_id, rich_message)
 
     async def export_chat_invite_link(self, chat_id: int) -> Dict[str, Any]:
         """Exports an invite link to the chat (requires admin rights with can_invite_users)."""

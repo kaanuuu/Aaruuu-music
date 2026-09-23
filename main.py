@@ -173,6 +173,46 @@ try:
                         pass
 
             pyrogram.Client.handle_updates = _safe_handle_updates
+
+    # 5. Patch Pyrogram Raw TL Functions (phone.JoinGroupCall, etc.) to safely absorb Layer 180+ fields like 'public_key'
+    import inspect
+
+    def _make_safe_constructor(cls):
+        if not isinstance(cls, type) or not hasattr(cls, "__init__"):
+            return
+        orig_init = cls.__init__
+        if getattr(orig_init, "_is_safe_patched", False):
+            return
+        try:
+            sig = inspect.signature(orig_init)
+            has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+            def _safe_init(self, *args, **kwargs):
+                if not has_varkw:
+                    extra_keys = set(kwargs.keys()) - set(sig.parameters.keys())
+                    if extra_keys:
+                        for k in list(extra_keys):
+                            val = kwargs.pop(k, None)
+                            setattr(self, k, val)
+                return orig_init(self, *args, **kwargs)
+
+            _safe_init._is_safe_patched = True
+            cls.__init__ = _safe_init
+        except Exception:
+            pass
+
+    if hasattr(pyrogram, "raw") and hasattr(pyrogram.raw, "functions"):
+        import pyrogram.raw.functions as all_raw_funcs
+        for sub_name in dir(all_raw_funcs):
+            sub_mod = getattr(all_raw_funcs, sub_name, None)
+            if sub_mod and hasattr(sub_mod, "__dict__"):
+                for attr_name in dir(sub_mod):
+                    _make_safe_constructor(getattr(sub_mod, attr_name, None))
+
+    if hasattr(pyrogram, "raw") and hasattr(pyrogram.raw, "types"):
+        import pyrogram.raw.types as all_raw_types
+        for attr_name in dir(all_raw_types):
+            _make_safe_constructor(getattr(all_raw_types, attr_name, None))
 except Exception:
     pass
 
