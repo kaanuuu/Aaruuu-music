@@ -78,11 +78,16 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
 
     domain, action, session_id = parts[0], parts[1], parts[2]
 
+    if action == "close":
+        await bot_api_client.answer_callback_query(cq_id, "Closed.")
+        await bot_api_client.delete_message(chat_id, message_id)
+        return
+
     state = await player_manager.get_state(chat_id)
     queue = await player_manager.get_queue(chat_id)
 
-    # Stale button verification
-    if state.session_id != session_id:
+    # Stale button recovery: if session_id changed but music is active, adopt current session
+    if state.session_id != session_id and not state.current_track:
         await bot_api_client.answer_callback_query(
             cq_id, "This player is no longer active.", show_alert=True
         )

@@ -467,10 +467,12 @@ class VoiceChatAssistant:
                 except Exception:
                     pass
 
-                # Sanitize playable source: PyTgCalls cannot directly stream YouTube webpage URLs on datacenter IPs
+                # Sanitize playable source: PyTgCalls cannot directly stream YouTube webpage URLs or googlevideo URLs on datacenter IPs without getting 403 HTTP blocked
                 playable_stream = audio_source
                 if audio_source.startswith(("http://", "https://")) and (
-                    "youtube.com" in audio_source or "youtu.be" in audio_source
+                    "youtube.com" in audio_source
+                    or "youtu.be" in audio_source
+                    or "googlevideo.com" in audio_source
                 ):
                     playable_stream = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
@@ -485,30 +487,49 @@ class VoiceChatAssistant:
                     chat_id,
                 )
 
-                # PyTgCalls v1 API (join_group_call with AudioPiped)
-                if hasattr(self.pytgcalls, "join_group_call"):
-                    stream = AudioPiped(playable_stream) if AudioPiped else playable_stream
-                    if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
+                # Construct stream with FFmpeg reconnect flags so HTTP streams don't stall at 0:02
+                ffmpeg_params = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+                
+                def _build_stream(target_url: str):
+                    if AudioPiped:
                         try:
-                            await self.pytgcalls.change_stream(chat_id, stream)
+                            return AudioPiped(target_url, additional_ffmpeg_parameters=ffmpeg_params)
                         except Exception:
-                            await self.pytgcalls.join_group_call(chat_id, stream)
-                    else:
-                        await self.pytgcalls.join_group_call(chat_id, stream)
+                            try:
+                                return AudioPiped(target_url, ffmpeg_parameters=ffmpeg_params)
+                            except Exception:
+                                return AudioPiped(target_url)
+                    if MediaStream:
+                        try:
+                            return MediaStream(target_url, ffmpeg_parameters=ffmpeg_params)
+                        except Exception:
+                            return MediaStream(target_url)
+                    return target_url
 
-                # PyTgCalls v2 API (play with MediaStream)
-                elif hasattr(self.pytgcalls, "play"):
-                    stream = MediaStream(playable_stream) if MediaStream else playable_stream
+                stream_obj = _build_stream(playable_stream)
+
+                # PyTgCalls v1 API (join_group_call)
+                if hasattr(self.pytgcalls, "join_group_call"):
                     if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
                         try:
-                            await self.pytgcalls.change_stream(chat_id, stream)
+                            await self.pytgcalls.change_stream(chat_id, stream_obj)
                         except Exception:
-                            await self.pytgcalls.play(chat_id, stream)
+                            await self.pytgcalls.join_group_call(chat_id, stream_obj)
                     else:
-                        await self.pytgcalls.play(chat_id, stream)
+                        await self.pytgcalls.join_group_call(chat_id, stream_obj)
+
+                # PyTgCalls v2 API (play)
+                elif hasattr(self.pytgcalls, "play"):
+                    if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
+                        try:
+                            await self.pytgcalls.change_stream(chat_id, stream_obj)
+                        except Exception:
+                            await self.pytgcalls.play(chat_id, stream_obj)
+                    else:
+                        await self.pytgcalls.play(chat_id, stream_obj)
 
                 elif hasattr(self.pytgcalls, "join_call"):
-                    await self.pytgcalls.join_call(chat_id, playable_stream)
+                    await self.pytgcalls.join_call(chat_id, stream_obj)
 
                 self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
                 self.last_error = None

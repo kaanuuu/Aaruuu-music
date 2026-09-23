@@ -152,12 +152,41 @@ class MediaExtractor:
         if "youtu" in clean_input.lower():
             yt_meta = await loop.run_in_executor(None, self._extract_youtube_meta, clean_input)
 
-        # Step 2: Attempt direct extraction via yt-dlp
+        # Build clean search query for unblocked audio CDN lookups (JioSaavn / SoundCloud)
+        clean_query = clean_input
+        if yt_meta and yt_meta.get("title"):
+            clean_query = f"{yt_meta['title']} {yt_meta.get('artist', '')}"
+        clean_query = self._clean_search_query(clean_query) or clean_input
+
+        # Step 2: Try JioSaavn search first for direct, unblocked 320kbps MP3 CDN stream
+        jio_track = await loop.run_in_executor(
+            None, self._extract_jiosaavn, clean_query, requester_id, requester_name
+        )
+        if jio_track and jio_track.stream_url and jio_track.stream_url.startswith("http"):
+            if yt_meta:
+                jio_track.thumbnail = yt_meta["thumbnail"]
+                jio_track.title = yt_meta["title"]
+                jio_track.artist = yt_meta["artist"]
+                jio_track.source_url = yt_meta["source_url"]
+            return jio_track
+
+        # Step 3: Try SoundCloud search for direct audio CDN stream
+        sc_track = await loop.run_in_executor(
+            None, self._extract_soundcloud, clean_query, requester_id, requester_name
+        )
+        if sc_track and sc_track.stream_url and sc_track.stream_url.startswith("http"):
+            if yt_meta:
+                sc_track.thumbnail = yt_meta["thumbnail"]
+                sc_track.title = yt_meta["title"]
+                sc_track.artist = yt_meta["artist"]
+                sc_track.source_url = yt_meta["source_url"]
+            return sc_track
+
+        # Step 4: Attempt direct extraction via yt-dlp
         track = await loop.run_in_executor(
             None, self._extract_ytdlp, clean_input, is_url, requester_id, requester_name
         )
         if track:
-            # If YouTube link, guarantee YouTube's official video thumbnail is used
             if yt_meta and yt_meta.get("thumbnail"):
                 track.thumbnail = yt_meta["thumbnail"]
                 if yt_meta.get("title") and ("unknown" in track.title.lower() or track.title == clean_input):
@@ -166,35 +195,7 @@ class MediaExtractor:
                     track.artist = yt_meta["artist"]
             return track
 
-        # Step 3: Audio fallback resolution when YouTube datacenter blocks direct stream
-        # Determine query for audio search (use YouTube video title if available)
-        search_query = clean_input
-        if yt_meta and yt_meta.get("title"):
-            search_query = f"{yt_meta['title']} {yt_meta.get('artist', '')}".strip()
-
-        # Try JioSaavn search (unblocked high-quality CDN stream)
-        track = await loop.run_in_executor(
-            None, self._extract_jiosaavn, search_query, requester_id, requester_name
-        )
-        if track:
-            if yt_meta:
-                track.thumbnail = yt_meta["thumbnail"]
-                track.title = yt_meta["title"]
-                track.artist = yt_meta["artist"]
-            return track
-
-        # Try SoundCloud search
-        track = await loop.run_in_executor(
-            None, self._extract_soundcloud, search_query, requester_id, requester_name
-        )
-        if track:
-            if yt_meta:
-                track.thumbnail = yt_meta["thumbnail"]
-                track.title = yt_meta["title"]
-                track.artist = yt_meta["artist"]
-            return track
-
-        # Step 4: Graceful synthetic track creation so player and queue never break
+        # Step 5: Graceful synthetic track creation so player and queue never break
         logger.info("Generating safe audio track for query: %s", clean_input)
         final_title = yt_meta["title"] if yt_meta else (sanitize_text(clean_input, 64) or "Unknown Song")
         final_artist = yt_meta["artist"] if yt_meta else "Aaruu Music Stream"
@@ -212,6 +213,14 @@ class MediaExtractor:
             requester_user_id=requester_id,
             requester_name=requester_name,
         )
+
+    @staticmethod
+    def _clean_search_query(raw_query: str) -> str:
+        """Removes parentheses, brackets, and common video metadata tags for clean song search."""
+        q = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", raw_query)
+        q = re.sub(r"\b(official|video|audio|lyric|lyrics|full|song|hd|4k|mv|remix|edition|version)\b", " ", q, flags=re.IGNORECASE)
+        q = re.sub(r"[\|,\-\_\+]", " ", q)
+        return " ".join(q.split()).strip()
 
     def _extract_ytdlp(
         self, target: str, is_url: bool, requester_id: int, requester_name: str

@@ -116,7 +116,9 @@ try:
 
             orig_getattr = getattr(cls, "__getattr__", None)
             def _safe_getattr(self, name):
-                if name in ("public_key", "block", "video_stopped", "muted", "invite_hash"):
+                if name in ("muted", "video_stopped"):
+                    return False
+                if name in ("public_key", "block", "invite_hash"):
                     return None
                 if orig_getattr:
                     return orig_getattr(self, name)

@@ -84,32 +84,40 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
 
     text = guides.get(guide_section, guides["home"])
 
-    # Build dynamic buttons
-    row_1 = [
-        {"text": "🚀 " + to_small_caps("getting started"), "style": "primary", "callback_data": "help:getting_started"},
-        {"text": "🔍 " + to_small_caps("find & play"), "style": "primary", "callback_data": "help:find_play"},
-    ]
-    row_2 = [
-        {"text": "🎛 " + to_small_caps("controls"), "style": "primary", "callback_data": "help:controls"},
-        {"text": "📋 " + to_small_caps("queue & repeat"), "style": "primary", "callback_data": "help:queue_repeat"},
-    ]
-    row_3 = [
-        {"text": "⚙️ " + to_small_caps("group settings"), "style": "primary", "callback_data": "help:group_settings"},
-        {"text": "🛡 " + to_small_caps("group admins"), "style": "primary", "callback_data": "help:group_admins"},
-    ]
-    row_4 = [
-        {"text": "🛠 " + to_small_caps("troubleshooting"), "style": "primary", "callback_data": "help:troubleshooting"},
-    ]
-    if is_owner:
-        row_4.append({"text": "👑 " + to_small_caps("owner & sudo"), "style": "primary", "callback_data": "help:owner_sudo"})
+    if guide_section == "home":
+        row_1 = [
+            {"text": "🚀 " + to_small_caps("getting started"), "style": "primary", "callback_data": "help:getting_started"},
+            {"text": "🔍 " + to_small_caps("find & play"), "style": "primary", "callback_data": "help:find_play"},
+        ]
+        row_2 = [
+            {"text": "🎛 " + to_small_caps("controls"), "style": "primary", "callback_data": "help:controls"},
+            {"text": "📋 " + to_small_caps("queue & repeat"), "style": "primary", "callback_data": "help:queue_repeat"},
+        ]
+        row_3 = [
+            {"text": "⚙️ " + to_small_caps("group settings"), "style": "primary", "callback_data": "help:group_settings"},
+            {"text": "🛡 " + to_small_caps("group admins"), "style": "primary", "callback_data": "help:group_admins"},
+        ]
+        row_4 = [
+            {"text": "🛠 " + to_small_caps("troubleshooting"), "style": "primary", "callback_data": "help:troubleshooting"},
+        ]
+        if is_owner:
+            row_4.append({"text": "👑 " + to_small_caps("owner & sudo"), "style": "primary", "callback_data": "help:owner_sudo"})
 
-    row_5 = [
-        {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
-        {"text": "🏠 " + to_small_caps("home"), "style": "primary", "callback_data": "help:home"},
-        {"text": "✖ " + to_small_caps("close"), "style": "link", "callback_data": "help:close"},
-    ]
-
-    button_rows = [row_1, row_2, row_3, row_4, row_5]
+        row_5 = [
+            {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
+            {"text": "✖ " + to_small_caps("close"), "style": "link", "callback_data": "help:close"},
+        ]
+        button_rows = [row_1, row_2, row_3, row_4, row_5]
+    else:
+        # Inside a specific sub-guide: provide clean back navigation without dumping all old buttons
+        row_back = [
+            {"text": "◀ " + to_small_caps("back to guide menu"), "style": "primary", "callback_data": "help:home"},
+            {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
+        ]
+        row_close = [
+            {"text": "✖ " + to_small_caps("close guide"), "style": "link", "callback_data": "help:close"},
+        ]
+        button_rows = [row_back, row_close]
 
     blocks: List[Dict[str, Any]] = [
         {
@@ -128,32 +136,14 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             "type": "paragraph",
             "text": text,
         },
-        {
-            "type": "buttons",
-            "buttons": row_1,
-            "align": "center",
-        },
-        {
-            "type": "buttons",
-            "buttons": row_2,
-            "align": "center",
-        },
-        {
-            "type": "buttons",
-            "buttons": row_3,
-            "align": "center",
-        },
-        {
-            "type": "buttons",
-            "buttons": row_4,
-            "align": "center",
-        },
-        {
-            "type": "buttons",
-            "buttons": row_5,
-            "align": "center",
-        },
     ]
+
+    for row in button_rows:
+        blocks.append({
+            "type": "buttons",
+            "buttons": row,
+            "align": "center",
+        })
 
     return {
         "blocks": blocks,
