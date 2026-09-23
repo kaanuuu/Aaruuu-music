@@ -14,6 +14,7 @@ from bot.rich_player import build_player_rich_message, build_queue_rich_message
 from database.db import Database
 from player.extractor import MediaExtractor
 from player.manager import player_manager
+from player.voice_chat import voice_assistant
 from utils.escaping import sanitize_text
 from utils.formatting import format_time
 from utils.logging import logger

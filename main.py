@@ -39,6 +39,58 @@ def _load_env():
 
 _load_env()
 
+# -------------------------------------------------------------
+# Early Pyrogram v2 & PyTgCalls Compatibility & 64-bit ID Patches
+# -------------------------------------------------------------
+try:
+    import pyrogram
+    import pyrogram.errors
+    import pyrogram.utils
+
+    for _name in (
+        "GroupcallForbidden",
+        "GroupcallInvalid",
+        "GroupcallAlreadyStarted",
+        "GroupcallNotFound",
+        "GroupCallNotFound",
+        "GroupCallInvalid",
+        "NoActiveGroupCall",
+        "UserAlreadyParticipant",
+    ):
+        if not hasattr(pyrogram.errors, _name):
+            _exc = type(_name, (Exception,), {})
+            setattr(pyrogram.errors, _name, _exc)
+            try:
+                import pyrogram.errors.exceptions
+                setattr(pyrogram.errors.exceptions, _name, _exc)
+            except Exception:
+                pass
+
+    if hasattr(pyrogram.utils, "MIN_CHANNEL_ID"):
+        pyrogram.utils.MIN_CHANNEL_ID = -10099999999999
+    if hasattr(pyrogram.utils, "MAX_CHANNEL_ID"):
+        pyrogram.utils.MAX_CHANNEL_ID = -1000000000000
+
+    def _safe_get_peer_type(peer_id: int) -> str:
+        if peer_id < 0:
+            if peer_id <= -1000000000000:
+                return "channel"
+            return "chat"
+        elif peer_id > 0:
+            return "user"
+        raise ValueError(f"Peer id invalid: {peer_id}")
+
+    pyrogram.utils.get_peer_type = _safe_get_peer_type
+
+    def _safe_get_channel_id(peer_id: int) -> int:
+        if str(peer_id).startswith("-100"):
+            return int(peer_id)
+        return int(f"-100{peer_id}")
+
+    pyrogram.utils.get_channel_id = _safe_get_channel_id
+except Exception:
+    pass
+
 from bot.api import bot_api_client
 from bot.commands import COMMANDS_REGISTRY
 from bot.handlers import process_update

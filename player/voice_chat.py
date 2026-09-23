@@ -12,7 +12,7 @@ import struct
 from typing import Any, Dict, Optional
 from utils.logging import logger
 
-# Flexible PyTgCalls imports for v1 & v2 compatibility
+# Flexible PyTgCalls imports with Pyrogram v2 backward compatibility patches
 PYTGCALLS_AVAILABLE = False
 Client = None
 PyTgCalls = None
@@ -20,6 +20,50 @@ AudioPiped = None
 MediaStream = None
 
 try:
+    import pyrogram
+    import pyrogram.errors
+    import pyrogram.utils
+
+    # 1. Patch missing legacy errors that PyTgCalls imports from pyrogram.errors in Pyrogram v2
+    _legacy_exceptions = [
+        "GroupcallForbidden",
+        "GroupcallInvalid",
+        "GroupcallAlreadyStarted",
+        "GroupcallNotFound",
+        "GroupCallNotFound",
+        "GroupCallInvalid",
+        "NoActiveGroupCall",
+        "UserAlreadyParticipant",
+    ]
+    for _name in _legacy_exceptions:
+        if not hasattr(pyrogram.errors, _name):
+            _exc = type(_name, (Exception,), {})
+            setattr(pyrogram.errors, _name, _exc)
+            try:
+                import pyrogram.errors.exceptions
+                setattr(pyrogram.errors.exceptions, _name, _exc)
+            except Exception:
+                pass
+
+    # 2. Modern Telegram 64-bit channel IDs patch (e.g. -1003952024411)
+    if hasattr(pyrogram.utils, "MIN_CHANNEL_ID"):
+        pyrogram.utils.MIN_CHANNEL_ID = -10099999999999
+    if hasattr(pyrogram.utils, "MAX_CHANNEL_ID"):
+        pyrogram.utils.MAX_CHANNEL_ID = -1000000000000
+
+    _orig_get_peer_type = getattr(pyrogram.utils, "get_peer_type", None)
+    if _orig_get_peer_type:
+        def _safe_get_peer_type(peer_id: int) -> str:
+            if peer_id < 0:
+                if peer_id <= -1000000000000:
+                    return "channel"
+                return "chat"
+            elif peer_id > 0:
+                return "user"
+            raise ValueError(f"Peer id invalid: {peer_id}")
+
+        pyrogram.utils.get_peer_type = _safe_get_peer_type
+
     from pyrogram import Client
     from pytgcalls import PyTgCalls
 
@@ -36,7 +80,8 @@ try:
         MediaStream = None
 
     PYTGCALLS_AVAILABLE = True
-except ImportError:
+except Exception as _pytg_err:
+    logger.debug("PyTgCalls import warning: %s", str(_pytg_err))
     PYTGCALLS_AVAILABLE = False
 
 
@@ -189,9 +234,13 @@ class VoiceChatAssistant:
                 logger.warning("Voice Chat: Could not fetch assistant profile: %s", str(e))
                 self.is_connected = True
 
-            self.pytgcalls = PyTgCalls(self.app)
-            await self.pytgcalls.start()
-            logger.info("Voice Chat: PyTgCalls VC assistant connected successfully!")
+            try:
+                self.pytgcalls = PyTgCalls(self.app)
+                await self.pytgcalls.start()
+                logger.info("Voice Chat: PyTgCalls VC assistant connected successfully!")
+            except Exception as vc_err:
+                logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", str(vc_err))
+                self.pytgcalls = None
         except Exception as e:
             err_msg = str(e)
             if "271 bytes" in err_msg or "unpack" in err_msg:
@@ -210,10 +259,14 @@ class VoiceChatAssistant:
             logger.info("Voice Chat: Assistant successfully joined chat %s", chat_id_or_invite_link)
             return True
         except Exception as e:
+            err_str = str(e)
+            if "USER_ALREADY_PARTICIPANT" in err_str:
+                logger.info("Voice Chat: Assistant is already a participant of %s", chat_id_or_invite_link)
+                return True
             logger.warning(
                 "Voice Chat: Assistant failed to join chat %s: %s",
                 chat_id_or_invite_link,
-                str(e),
+                err_str,
             )
             return False
 
