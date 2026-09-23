@@ -476,11 +476,20 @@ class VoiceChatAssistant:
                 ):
                     playable_stream = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
-                # Ensure the peer is cached in Pyrogram storage before VC call
+                # Robust peer caching in Pyrogram storage before VC call
                 try:
                     await self.app.get_chat(chat_id)
-                except Exception:
-                    pass
+                except Exception as peer_err:
+                    logger.info("Voice Chat: Direct get_chat(%s) note: %s. Resolving peer via invite link...", chat_id, str(peer_err))
+                    try:
+                        from bot.api import bot_api_client
+                        inv_res = await bot_api_client.export_chat_invite_link(chat_id)
+                        inv_link = inv_res.get("result") if inv_res.get("ok") else None
+                        if inv_link:
+                            await self.app.join_chat(inv_link)
+                            await self.app.get_chat(chat_id)
+                    except Exception as inv_err:
+                        logger.debug("Voice Chat: Invite link peer resolution note: %s", str(inv_err))
 
                 logger.info(
                     "Voice Chat: PyTgCalls joining VC call in chat %s with audio source...",
@@ -508,28 +517,49 @@ class VoiceChatAssistant:
 
                 stream_obj = _build_stream(playable_stream)
 
-                # PyTgCalls v1 API (join_group_call)
-                if hasattr(self.pytgcalls, "join_group_call"):
-                    if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
-                        try:
-                            await self.pytgcalls.change_stream(chat_id, stream_obj)
-                        except Exception:
+                async def _do_stream():
+                    # PyTgCalls v1 API (join_group_call)
+                    if hasattr(self.pytgcalls, "join_group_call"):
+                        if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
+                            try:
+                                await self.pytgcalls.change_stream(chat_id, stream_obj)
+                            except Exception:
+                                await self.pytgcalls.join_group_call(chat_id, stream_obj)
+                        else:
                             await self.pytgcalls.join_group_call(chat_id, stream_obj)
-                    else:
-                        await self.pytgcalls.join_group_call(chat_id, stream_obj)
 
-                # PyTgCalls v2 API (play)
-                elif hasattr(self.pytgcalls, "play"):
-                    if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
-                        try:
-                            await self.pytgcalls.change_stream(chat_id, stream_obj)
-                        except Exception:
+                    # PyTgCalls v2 API (play)
+                    elif hasattr(self.pytgcalls, "play"):
+                        if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
+                            try:
+                                await self.pytgcalls.change_stream(chat_id, stream_obj)
+                            except Exception:
+                                await self.pytgcalls.play(chat_id, stream_obj)
+                        else:
                             await self.pytgcalls.play(chat_id, stream_obj)
-                    else:
-                        await self.pytgcalls.play(chat_id, stream_obj)
 
-                elif hasattr(self.pytgcalls, "join_call"):
-                    await self.pytgcalls.join_call(chat_id, stream_obj)
+                    elif hasattr(self.pytgcalls, "join_call"):
+                        await self.pytgcalls.join_call(chat_id, stream_obj)
+
+                try:
+                    await _do_stream()
+                except Exception as inner_e:
+                    # If CHANNEL_INVALID or peer missing on first try, attempt 1 retry after forcing peer resolution
+                    err_str = str(inner_e).lower()
+                    if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str:
+                        logger.info("Voice Chat: Initial stream join failed (%s). Retrying after peer sync...", str(inner_e))
+                        await asyncio.sleep(0.5)
+                        try:
+                            from bot.api import bot_api_client
+                            inv_res = await bot_api_client.export_chat_invite_link(chat_id)
+                            inv_link = inv_res.get("result") if inv_res.get("ok") else None
+                            if inv_link:
+                                await self.app.join_chat(inv_link)
+                        except Exception:
+                            pass
+                        await _do_stream()
+                    else:
+                        raise inner_e
 
                 self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
                 self.last_error = None
