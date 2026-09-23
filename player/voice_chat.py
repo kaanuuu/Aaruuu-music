@@ -6,7 +6,9 @@ If ASSISTANT_SESSION (or STRING_SESSION + API_ID + API_HASH) is configured, stre
 If not configured, operates in standalone Rich Message UI & queue management mode.
 """
 
+import base64
 import os
+import struct
 from typing import Any, Dict, Optional
 from utils.logging import logger
 
@@ -38,15 +40,88 @@ except ImportError:
     PYTGCALLS_AVAILABLE = False
 
 
+def sanitize_and_prepare_session(session_str: str, api_id: int = 6) -> str:
+    """
+    Sanitizes string session:
+    1. Strips leading/trailing whitespace, newlines, and quotes (' or ").
+    2. Fixes base64 padding.
+    3. Auto-converts older Pyrogram formats (262, 263, 266, 267 bytes) into Pyrogram v2 (271 bytes: >BI?256sQ?)
+       by injecting the 4-byte API ID into the binary structure so Pyrogram v2 unpack never errors out.
+    """
+    if not session_str:
+        return ""
+
+    cleaned = session_str.strip().strip("'\"").strip()
+    if not cleaned:
+        return ""
+
+    # Fix base64 padding if stripped during copy-paste
+    rem = len(cleaned) % 4
+    if rem:
+        cleaned += "=" * (4 - rem)
+
+    try:
+        try:
+            raw = base64.urlsafe_b64decode(cleaned)
+        except Exception:
+            raw = base64.b64decode(cleaned)
+
+        raw_len = len(raw)
+
+        # Already valid Pyrogram v2 structure (271 bytes: >BI?256sQ?)
+        if raw_len == 271:
+            return cleaned
+
+        # Pyrogram v1 with 64-bit user id (267 bytes: >B?256sQ?)
+        if raw_len == 267:
+            dc_id, test_mode, auth_key, user_id, is_bot = struct.unpack(">B?256sQ?", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, is_bot)
+            logger.info("Voice Chat: Auto-converted 267-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+        # Pyrogram v1 standard (263 bytes: >B?256sI?)
+        if raw_len == 263:
+            dc_id, test_mode, auth_key, user_id, is_bot = struct.unpack(">B?256sI?", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, is_bot)
+            logger.info("Voice Chat: Auto-converted 263-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+        # Pyrogram v1 compact (262 bytes: >B?256sI)
+        if raw_len == 262:
+            dc_id, test_mode, auth_key, user_id = struct.unpack(">B?256sI", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, False)
+            logger.info("Voice Chat: Auto-converted 262-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+        # Pyrogram v1 64-bit compact (266 bytes: >B?256sQ)
+        if raw_len == 266:
+            dc_id, test_mode, auth_key, user_id = struct.unpack(">B?256sQ", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, False)
+            logger.info("Voice Chat: Auto-converted 266-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+    except Exception as e:
+        logger.debug("Session string format probe error: %s", str(e))
+
+    return cleaned
+
+
 class VoiceChatAssistant:
     """Manages Telegram Group Voice Chat (VC) audio streaming via PyTgCalls / Pyrogram."""
 
     def __init__(self):
-        self.session_string: Optional[str] = (
-            os.getenv("STRING_SESSION") or os.getenv("ASSISTANT_SESSION")
+        raw_session = (
+            os.getenv("STRING_SESSION") or os.getenv("ASSISTANT_SESSION") or ""
         )
         self.api_id: Optional[str] = os.getenv("API_ID")
         self.api_hash: Optional[str] = os.getenv("API_HASH")
+
+        parsed_api_id = (
+            int(self.api_id) if self.api_id and str(self.api_id).isdigit() else 6
+        )
+        self.session_string: Optional[str] = sanitize_and_prepare_session(
+            raw_session, parsed_api_id
+        )
 
         self.is_configured: bool = bool(
             self.session_string and self.session_string.strip()
@@ -95,7 +170,13 @@ class VoiceChatAssistant:
             await self.pytgcalls.start()
             logger.info("Voice Chat: PyTgCalls VC assistant connected successfully!")
         except Exception as e:
-            logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", str(e))
+            err_msg = str(e)
+            if "271 bytes" in err_msg or "unpack" in err_msg:
+                logger.warning(
+                    "Voice Chat: Provided STRING_SESSION format is incompatible with Pyrogram v2 (was generated using Telethon or Pyrogram v1). Please generate a Pyrogram v2 session string for VC live audio. Operating seamlessly in High-Speed Rich UI mode."
+                )
+            else:
+                logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", err_msg)
 
     async def play_audio(self, chat_id: int, audio_source: str) -> bool:
         """Streams audio_source (URL or file) into the group voice chat call."""

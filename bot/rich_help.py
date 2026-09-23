@@ -1,128 +1,152 @@
 """
 Aaruu Music - Rich Start & Help Guide
-Renders interactive Rich Message documentation and guide blocks with RichMessageButton navigation.
+Renders aesthetic documentation and interactive guides using Unicode typography
+(sans-serif bold, small caps) without raw HTML tags.
+Hides owner-only commands from non-owners and provides 1-tap support redirection to @wzzkaanu.
 """
 
 from typing import Any, Dict, List
+from utils.typography import to_bold_sans, to_small_caps
+
+SUPPORT_URL = "https://t.me/wzzkaanu"
 
 
-def build_start_rich_message(guide_section: str = "home") -> Dict[str, Any]:
+def build_start_rich_message(guide_section: str = "home", is_owner: bool = False) -> Dict[str, Any]:
     """
-    Renders the /start and /help interactive guide with Rich Message buttons.
+    Renders the /start and /help interactive guide with clean typography.
+    Owner-only sections and buttons are hidden if is_owner is False.
     """
     guides = {
         "home": (
-            "<b>Welcome to Aaruu Music!</b>\n\n"
-            "High-fidelity Telegram Music Bot powered by native Rich Messages, "
-            "per-chat isolated queues, and 24/7 worker continuity.\n\n"
-            "<b>What would you like to do?</b>\n"
-            "Choose a guide below to explore commands and features."
+            f"⚡ {to_bold_sans('WELCOME TO AARUU MUSIC')}\n\n"
+            f"High-fidelity Telegram Music Bot with per-chat isolated queues "
+            f"and 24/7 continuous worker engine.\n\n"
+            f"❓ {to_bold_sans('CHOOSE A GUIDE BELOW')}:\n"
+            f"Tap any button below to explore commands and features."
         ),
         "getting_started": (
-            "<b>🚀 Getting Started</b>\n\n"
-            "1. Add <b>Aaruu Music</b> to your Telegram group or use in private.\n"
-            "2. Make the bot an administrator if group voice-chat playback is needed.\n"
-            "3. Send <code>/play &lt;song name or URL&gt;</code> to begin.\n"
-            "4. Control playback with native Rich Message buttons."
+            f"🚀 {to_bold_sans('GETTING STARTED')}\n\n"
+            f"1. Add Aaruu Music to your group or chat in private.\n"
+            f"2. Promote the bot to administrator to stream in group Voice Chats.\n"
+            f"3. Send /play <song name or link> to play music.\n"
+            f"4. Manage music live with the interactive control panel."
         ),
         "find_play": (
-            "<b>🔍 Find & Play</b>\n\n"
-            "• <code>/play &lt;song name&gt;</code> - Searches YouTube and plays the top result.\n"
-            "• <code>/play &lt;link&gt;</code> - Resolves direct YouTube or audio URL.\n"
-            "• If audio is already active, songs are automatically added to the queue."
+            f"🔍 {to_bold_sans('FIND & PLAY')}\n\n"
+            f"• /play <song name> - Searches audio and streams top result\n"
+            f"• /play <link> - Plays direct audio/YouTube/JioSaavn/SoundCloud link\n"
+            f"• /nowplaying - Opens active player control panel"
         ),
         "controls": (
-            "<b>🎛 Controls</b>\n\n"
-            "• <b>↩ Replay</b>: Starts the current track from 0:00.\n"
-            "• <b>⏸ Pause / ▶ Resume</b>: Toggles active stream.\n"
-            "• <b>≫ Skip</b>: Moves directly to the next queued track.\n"
-            "• <code>/seek &lt;seconds&gt;</code>: Jumps to a specific timestamp.\n"
-            "• <code>/volume &lt;1-100&gt;</code>: Sets output volume."
+            f"🎛 {to_bold_sans('CONTROLS')}\n\n"
+            f"• ↺ Replay: Restarts the current track from 0:00\n"
+            f"• ⏸ Pause / ▶ Resume: Toggles audio playback\n"
+            f"• ⏭ Skip: Moves immediately to the next queued track\n"
+            f"• /seek <seconds>: Jumps to a specific timestamp\n"
+            f"• /volume <1-100>: Adjusts playback volume"
         ),
         "queue_repeat": (
-            "<b>📋 Queue & Repeat</b>\n\n"
-            "• <code>/queue</code>: View upcoming tracks in the chat.\n"
-            "• <code>/clear</code>: Clears upcoming songs.\n"
-            "• <code>/loop &lt;off|track|queue&gt;</code>: Loops current song or the entire queue.\n"
-            "• Tap <b>☷ Queue · N</b> on the player to see real-time queue."
+            f"📋 {to_bold_sans('QUEUE & REPEAT')}\n\n"
+            f"• /queue - View upcoming tracks in chat\n"
+            f"• /clear - Clears all upcoming tracks\n"
+            f"• /shuffle - Shuffles queue order randomly\n"
+            f"• /loop <off|track|queue> - Sets loop mode"
         ),
         "group_settings": (
-            "<b>⚙️ Group Settings</b>\n\n"
-            "• <code>/settings</code>: Inspect volume, loop mode, and active configuration.\n"
-            "• Settings are persisted per chat in SQLite."
-        ),
-        "troubleshooting": (
-            "<b>🛠 Troubleshooting</b>\n\n"
-            "• <b>Stale Player Button</b>: If a button says 'This player is no longer active', send <code>/nowplaying</code> to fetch a fresh player.\n"
-            "• <b>Unavailable Song</b>: The bot safely catches geo-restricted or deleted videos.\n"
-            "• <b>Voice Chat Streaming</b>: Ensure <code>ASSISTANT_SESSION</code> is provided if voice streaming is desired."
+            f"⚙️ {to_bold_sans('GROUP SETTINGS')}\n\n"
+            f"• /settings - View chat volume, loop status, and queue rules\n"
+            f"• Settings are saved permanently per chat in SQLite."
         ),
         "group_admins": (
-            "<b>🛡 Group Admins</b>\n\n"
-            "Chat administrators can manage skip, stop, clear, volume, and settings commands. "
-            "Regular group members can request songs and browse the queue."
+            f"🛡 {to_bold_sans('GROUP ADMINS')}\n\n"
+            f"Admins have authority to skip, pause, clear queue, and change volume.\n"
+            f"Regular members can search songs and add to queue."
         ),
-        "owner_sudo": (
-            "<b>👑 Bot Owner & Sudo</b>\n\n"
-            "Configured via <code>OWNER_ID</code> and <code>SUDO_USERS</code>. "
-            "Sudo users have global administrative control across all chats.\n\n"
-            "<b>User Management:</b>\n"
-            "• <code>/block &lt;user_id or reply&gt; [reason]</code> - Ban user from bot\n"
-            "• <code>/unblock &lt;user_id or reply&gt;</code> - Unban user\n"
-            "• <code>/blocked</code> - List all permanently blocked users"
+        "troubleshooting": (
+            f"🛠 {to_bold_sans('TROUBLESHOOTING')}\n\n"
+            f"• If playback freezes or desyncs, send /ping or /nowplaying\n"
+            f"• For help, tap the Support button below to reach the owner directly."
         ),
     }
 
+    # Only expose owner section if is_owner is True
+    if is_owner:
+        guides["owner_sudo"] = (
+            f"👑 {to_bold_sans('BOT OWNER CONTROLS')}\n\n"
+            f"• /stats - Global users, groups, active playback, uptime\n"
+            f"• /block <user_id> [reason] - Permanently ban a user\n"
+            f"• /unblock <user_id> - Remove ban\n"
+            f"• /blocked - View list of all blocked users\n"
+            f"• /broadcast <text> - Send announcement to all groups\n"
+            f"• /sysinfo - Server CPU, RAM, and Disk metrics\n"
+            f"• /restart - Gracefully reload worker process"
+        )
+
     text = guides.get(guide_section, guides["home"])
 
-    # 10 guide buttons in structured rows
-    button_rows = [
-        [
-            {"text": "🚀 Getting started", "style": "primary", "callback_data": "help:getting_started"},
-            {"text": "🔍 Find & play", "style": "primary", "callback_data": "help:find_play"},
-        ],
-        [
-            {"text": "🎛 Controls", "style": "primary", "callback_data": "help:controls"},
-            {"text": "📋 Queue & repeat", "style": "primary", "callback_data": "help:queue_repeat"},
-        ],
-        [
-            {"text": "⚙️ Group settings", "style": "primary", "callback_data": "help:group_settings"},
-            {"text": "🛠 Troubleshooting", "style": "primary", "callback_data": "help:troubleshooting"},
-        ],
-        [
-            {"text": "🛡 Group admins", "style": "primary", "callback_data": "help:group_admins"},
-            {"text": "👑 Bot owner & sudo", "style": "primary", "callback_data": "help:owner_sudo"},
-        ],
-        [
-            {"text": "🏠 Home", "style": "primary", "callback_data": "help:home"},
-            {"text": "✖ Close", "style": "link", "callback_data": "help:close"},
-        ],
+    # Build dynamic buttons
+    row_1 = [
+        {"text": "🚀 " + to_small_caps("getting started"), "style": "primary", "callback_data": "help:getting_started"},
+        {"text": "🔍 " + to_small_caps("find & play"), "style": "primary", "callback_data": "help:find_play"},
     ]
+    row_2 = [
+        {"text": "🎛 " + to_small_caps("controls"), "style": "primary", "callback_data": "help:controls"},
+        {"text": "📋 " + to_small_caps("queue & repeat"), "style": "primary", "callback_data": "help:queue_repeat"},
+    ]
+    row_3 = [
+        {"text": "⚙️ " + to_small_caps("group settings"), "style": "primary", "callback_data": "help:group_settings"},
+        {"text": "🛡 " + to_small_caps("group admins"), "style": "primary", "callback_data": "help:group_admins"},
+    ]
+    row_4 = [
+        {"text": "🛠 " + to_small_caps("troubleshooting"), "style": "primary", "callback_data": "help:troubleshooting"},
+    ]
+    if is_owner:
+        row_4.append({"text": "👑 " + to_small_caps("owner & sudo"), "style": "primary", "callback_data": "help:owner_sudo"})
+
+    row_5 = [
+        {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
+        {"text": "🏠 " + to_small_caps("home"), "style": "primary", "callback_data": "help:home"},
+        {"text": "✖ " + to_small_caps("close"), "style": "link", "callback_data": "help:close"},
+    ]
+
+    button_rows = [row_1, row_2, row_3, row_4, row_5]
 
     blocks: List[Dict[str, Any]] = [
         {
             "type": "heading",
-            "text": "Aaruu Music",
+            "text": to_bold_sans("AARUU MUSIC GUIDE"),
             "size": 1,
-        },
-        {
-            "type": "paragraph",
-            "text": "<b>What would you like to do?</b>\nChoose a guide below.",
         },
         {
             "type": "paragraph",
             "text": text,
         },
+        {
+            "type": "buttons",
+            "buttons": row_1,
+            "align": "center",
+        },
+        {
+            "type": "buttons",
+            "buttons": row_2,
+            "align": "center",
+        },
+        {
+            "type": "buttons",
+            "buttons": row_3,
+            "align": "center",
+        },
+        {
+            "type": "buttons",
+            "buttons": row_4,
+            "align": "center",
+        },
+        {
+            "type": "buttons",
+            "buttons": row_5,
+            "align": "center",
+        },
     ]
-
-    for row in button_rows:
-        blocks.append(
-            {
-                "type": "buttons",
-                "buttons": row,
-                "align": "center",
-            }
-        )
 
     return {
         "blocks": blocks,

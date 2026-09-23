@@ -1,17 +1,17 @@
 """
 Aaruu Music - Callback Query Router
 Processes button clicks from Rich Messages, validates sessions, checks permissions,
-and triggers instant UI updates.
+and triggers instant UI updates with clean typography and owner access control.
 """
 
 from typing import Any, Dict
 from bot.api import bot_api_client
-from bot.permissions import is_chat_admin
+from bot.permissions import is_chat_admin, is_sudo
 from bot.rich_help import build_start_rich_message
 from bot.rich_player import build_player_rich_message, build_queue_rich_message
 from database.db import Database
 from player.manager import player_manager
-from utils.logging import logger
+from utils.typography import to_small_caps
 
 db = Database()
 
@@ -45,11 +45,18 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         section = data.split(":", 1)[1]
         if section == "close":
             await bot_api_client.answer_callback_query(cq_id, "Guide closed.")
-            await bot_api_client.bot_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            await bot_api_client.delete_message(chat_id, message_id)
+            return
+
+        user_is_owner = is_sudo(user_id)
+        if section == "owner_sudo" and not user_is_owner:
+            await bot_api_client.answer_callback_query(
+                cq_id, "⛔ Restricted to Bot Owner.", show_alert=True
+            )
             return
 
         await bot_api_client.answer_callback_query(cq_id)
-        rich_help = build_start_rich_message(section)
+        rich_help = build_start_rich_message(section, is_owner=user_is_owner)
         await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_help)
         return
 
@@ -107,7 +114,7 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
             await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
         else:
             await bot_api_client.send_message(
-                chat_id, "⏹ <b>Playback ended</b>. Queue is empty."
+                chat_id, "⏹ " + to_small_caps("playback ended. queue is empty.")
             )
 
     elif action == "queue":
@@ -139,7 +146,7 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
 
     elif action == "close":
         await bot_api_client.answer_callback_query(cq_id, "Closed.")
-        await bot_api_client.bot_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        await bot_api_client.delete_message(chat_id, message_id)
 
     else:
         await bot_api_client.answer_callback_query(cq_id, "Unknown button.")

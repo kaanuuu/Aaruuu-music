@@ -241,6 +241,34 @@ class TelegramAPIClient:
             payload["parse_mode"] = parse_mode
         return await self.bot_api("copyMessage", payload)
 
+    async def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: Optional[str] = None,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Edits text of a standard message."""
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "disable_web_page_preview": False,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        res = await self.bot_api("editMessageText", payload)
+        if not res.get("ok") and "message is not modified" in str(res.get("description", "")).lower():
+            return {"ok": True, "result": True}
+        return res
+
+    async def delete_message(self, chat_id: int, message_id: int) -> Dict[str, Any]:
+        """Deletes a message from chat."""
+        return await self.bot_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+
     # Internal fallbacks if telegram client/version doesn't support Rich Block protocol
     async def _fallback_send(self, chat_id: int, rich_message: Dict[str, Any]) -> Dict[str, Any]:
         text_content, thumbnail, inline_kb = self._extract_fallback_data(rich_message)
@@ -249,14 +277,13 @@ class TelegramAPIClient:
                 "chat_id": chat_id,
                 "photo": thumbnail,
                 "caption": text_content,
-                "parse_mode": "HTML",
                 "reply_markup": inline_kb,
             }
             res = await self.bot_api("sendPhoto", payload)
             if res.get("ok"):
                 return res
 
-        return await self.send_message(chat_id, text_content, parse_mode="HTML", reply_markup=inline_kb)
+        return await self.send_message(chat_id, text_content, parse_mode=None, reply_markup=inline_kb)
 
     async def _fallback_edit(
         self, chat_id: int, message_id: int, rich_message: Dict[str, Any]
@@ -266,21 +293,24 @@ class TelegramAPIClient:
             "chat_id": chat_id,
             "message_id": message_id,
             "caption": text_content,
-            "parse_mode": "HTML",
             "reply_markup": inline_kb,
         }
         res = await self.bot_api("editMessageCaption", payload)
         if res.get("ok"):
             return res
+        if "message is not modified" in str(res.get("description", "")).lower():
+            return {"ok": True, "result": True}
 
         payload_txt = {
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text_content,
-            "parse_mode": "HTML",
             "reply_markup": inline_kb,
         }
-        return await self.bot_api("editMessageText", payload_txt)
+        res2 = await self.bot_api("editMessageText", payload_txt)
+        if not res2.get("ok") and "message is not modified" in str(res2.get("description", "")).lower():
+            return {"ok": True, "result": True}
+        return res2
 
     def _extract_fallback_data(self, rich_message: Dict[str, Any]):
         texts: List[str] = []
@@ -291,7 +321,7 @@ class TelegramAPIClient:
         for block in blocks:
             btype = block.get("type")
             if btype in ("heading", "section_heading"):
-                texts.append(f"<b>{block.get('text', '')}</b>")
+                texts.append(block.get("text", ""))
             elif btype == "paragraph":
                 texts.append(block.get("text", ""))
             elif btype == "photo":
@@ -300,7 +330,11 @@ class TelegramAPIClient:
             elif btype == "buttons":
                 row = []
                 for btn in block.get("buttons", []):
-                    row.append({"text": btn.get("text", ""), "callback_data": btn.get("callback_data", "")})
+                    btn_text = btn.get("text", "")
+                    if btn.get("url"):
+                        row.append({"text": btn_text, "url": btn["url"]})
+                    elif btn.get("callback_data"):
+                        row.append({"text": btn_text, "callback_data": btn["callback_data"]})
                 if row:
                     rows.append(row)
 

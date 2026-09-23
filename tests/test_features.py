@@ -84,6 +84,33 @@ class TestExtendedFeatures(unittest.TestCase):
         self.assertEqual(cleared_all, 1)
         self.assertEqual(len(_admin_cache), 0)
 
+    def test_session_sanitizer_and_auto_conversion(self):
+        import base64
+        import struct
+        from player.voice_chat import sanitize_and_prepare_session
+
+        # 1. 263-byte session (older generator format) -> should convert to 271 bytes
+        raw_263 = struct.pack(">B?256sI?", 2, False, b"A" * 256, 123456, False)
+        s_263 = base64.urlsafe_b64encode(raw_263).decode().rstrip("=")
+        # Enclose in quotes and whitespace as commonly happens when copied
+        dirty_session = f"  '{s_263}' \n"
+        converted = sanitize_and_prepare_session(dirty_session, api_id=6)
+
+        pad = len(converted) % 4
+        if pad:
+            converted += "=" * (4 - pad)
+        decoded = base64.urlsafe_b64decode(converted)
+        self.assertEqual(len(decoded), 271)
+
+        # 2. 271-byte session (already Pyrogram v2)
+        raw_271 = struct.pack(">BI?256sQ?", 2, 6, False, b"B" * 256, 987654321, False)
+        s_271 = base64.urlsafe_b64encode(raw_271).decode().rstrip("=")
+        clean_271 = sanitize_and_prepare_session(s_271, api_id=6)
+        pad = len(clean_271) % 4
+        if pad:
+            clean_271 += "=" * (4 - pad)
+        self.assertEqual(len(base64.urlsafe_b64decode(clean_271)), 271)
+
 
 if __name__ == "__main__":
     unittest.main()

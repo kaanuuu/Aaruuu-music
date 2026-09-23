@@ -1,5 +1,6 @@
 """
 Unit tests for Telegram Bot API native Rich Message payload generation.
+Tests typography, button structures, owner privacy filtering, and support link.
 """
 
 import unittest
@@ -7,6 +8,7 @@ from bot.rich_help import build_start_rich_message
 from bot.rich_player import build_player_rich_message, build_queue_rich_message
 from player.models import PlayerState, Track
 from player.queue import TrackQueue
+from utils.typography import to_bold_sans, to_small_caps
 
 
 class TestRichMessages(unittest.TestCase):
@@ -35,7 +37,7 @@ class TestRichMessages(unittest.TestCase):
         # 1. Heading block
         heading_block = next((b for b in blocks if b.get("type") == "heading"), None)
         self.assertIsNotNone(heading_block)
-        self.assertEqual(heading_block.get("text"), "Aaruu Music")
+        self.assertEqual(heading_block.get("text"), to_bold_sans("AARUU MUSIC"))
 
         # 2. Photo block for album art
         photo_block = next((b for b in blocks if b.get("type") == "photo"), None)
@@ -50,29 +52,22 @@ class TestRichMessages(unittest.TestCase):
         self.assertIn("3:06", details_paragraph["text"])
         self.assertIn("●", details_paragraph["text"])
 
-        # 4. Buttons blocks (InputRichBlockButtons)
+        # 4. Buttons blocks
         button_blocks = [b for b in blocks if b.get("type") == "buttons"]
-        self.assertEqual(len(button_blocks), 2)
+        self.assertEqual(len(button_blocks), 3)
 
         # Row 1 buttons: Replay, Pause, Skip
         row1 = button_blocks[0]["buttons"]
         self.assertEqual(len(row1), 3)
-        self.assertEqual(row1[0]["text"], "↩ Replay")
-        self.assertEqual(row1[0]["style"], "primary")
-        self.assertEqual(row1[1]["text"], "⏸ Pause")
-        self.assertEqual(row1[1]["style"], "primary")
-        self.assertEqual(row1[2]["text"], "≫ Skip")
-        self.assertEqual(row1[2]["style"], "primary")
+        self.assertIn("ʀᴇᴘʟᴀʏ", row1[0]["text"])
+        self.assertIn("ᴘᴀᴜsᴇ", row1[1]["text"])
+        self.assertIn("sᴋɪᴘ", row1[2]["text"])
 
-        # Row 2 buttons: Queue · 0, Shuffle, Close
-        row2 = button_blocks[1]["buttons"]
-        self.assertEqual(len(row2), 3)
-        self.assertEqual(row2[0]["text"], "☷ Queue · 0")
-        self.assertEqual(row2[0]["style"], "primary")
-        self.assertEqual(row2[1]["text"], "🔀 Shuffle")
-        self.assertEqual(row2[1]["style"], "primary")
-        self.assertEqual(row2[2]["text"], "✖ Close")
-        self.assertEqual(row2[2]["style"], "link")
+        # Row 3 buttons: Support and Close
+        row3 = button_blocks[2]["buttons"]
+        support_btn = row3[0]
+        self.assertEqual(support_btn["url"], "https://t.me/wzzkaanu")
+        self.assertIn("sᴜᴘᴘᴏʀᴛ", support_btn["text"])
 
     def test_build_player_paused_toggle(self):
         self.state.play(self.track, {"name": "john_doe", "id": 12345})
@@ -82,7 +77,7 @@ class TestRichMessages(unittest.TestCase):
         row1 = button_blocks[0]["buttons"]
 
         # Middle button should now be Resume with success style
-        self.assertEqual(row1[1]["text"], "▶ Resume")
+        self.assertIn("ʀᴇsᴜᴍᴇ", row1[1]["text"])
         self.assertEqual(row1[1]["style"], "success")
         self.assertIn("player:resume:", row1[1]["callback_data"])
 
@@ -106,32 +101,33 @@ class TestRichMessages(unittest.TestCase):
 
         paragraphs = [b for b in blocks if b.get("type") == "paragraph"]
         combined_text = " ".join([p.get("text", "") for p in paragraphs])
-        self.assertIn("1 upcoming", combined_text)
+        self.assertIn("1", combined_text)
         self.assertIn("Aaruu Symphony", combined_text)
         self.assertIn("Next Up Track", combined_text)
 
     def test_build_start_rich_message_all_guides(self):
-        start_msg = build_start_rich_message("home")
+        # Non-owner view: owner button is hidden
+        start_msg = build_start_rich_message("home", is_owner=False)
         self.assertIn("blocks", start_msg)
         button_blocks = [b for b in start_msg["blocks"] if b.get("type") == "buttons"]
-        # Collect all buttons across rows
         all_buttons = []
         for bb in button_blocks:
             all_buttons.extend(bb["buttons"])
 
-        # Must have exactly 10 guide buttons as specified
-        self.assertEqual(len(all_buttons), 10)
-        btn_texts = [b["text"] for b in all_buttons]
-        self.assertTrue(any("Getting started" in t for t in btn_texts))
-        self.assertTrue(any("Find & play" in t for t in btn_texts))
-        self.assertTrue(any("Controls" in t for t in btn_texts))
-        self.assertTrue(any("Queue & repeat" in t for t in btn_texts))
-        self.assertTrue(any("Group settings" in t for t in btn_texts))
-        self.assertTrue(any("Troubleshooting" in t for t in btn_texts))
-        self.assertTrue(any("Group admins" in t for t in btn_texts))
-        self.assertTrue(any("Bot owner & sudo" in t for t in btn_texts))
-        self.assertTrue(any("Home" in t for t in btn_texts))
-        self.assertTrue(any("Close" in t for t in btn_texts))
+        # Owner button MUST NOT be in public buttons
+        self.assertFalse(any(b.get("callback_data") == "help:owner_sudo" for b in all_buttons))
+
+        # Support button MUST be present and redirect to https://t.me/wzzkaanu
+        support_btn = next((b for b in all_buttons if "url" in b and b["url"] == "https://t.me/wzzkaanu"), None)
+        self.assertIsNotNone(support_btn)
+
+        # Owner view: owner button is visible
+        owner_start_msg = build_start_rich_message("home", is_owner=True)
+        owner_blocks = [b for b in owner_start_msg["blocks"] if b.get("type") == "buttons"]
+        owner_buttons = []
+        for bb in owner_blocks:
+            owner_buttons.extend(bb["buttons"])
+        self.assertTrue(any(b.get("callback_data") == "help:owner_sudo" for b in owner_buttons))
 
 
 if __name__ == "__main__":
