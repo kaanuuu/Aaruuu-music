@@ -7,20 +7,37 @@ import asyncio
 import os
 import signal
 import sys
-# 1. Load environment variables with resilient fallback
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    # Cloud environments (Railway, Render, Heroku) inject variables directly into os.environ.
-    # We also manually parse .env if present so python-dotenv is never a hard failure point.
-    if os.path.exists(".env"):
-        with open(".env", "r", encoding="utf-8") as _f:
-            for _line in _f:
-                _line = _line.strip()
-                if _line and not _line.startswith("#") and "=" in _line:
-                    _k, _v = _line.split("=", 1)
-                    os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
+# 0. Automatically discover and patch site-packages from all virtual environments
+import glob
+for _pattern in [
+    "/opt/venv/lib/python*/site-packages",
+    "/app/.venv/lib/python*/site-packages",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv/lib/python*/site-packages"),
+    "/root/.local/lib/python*/site-packages",
+    os.path.expanduser("~/.local/lib/python*/site-packages"),
+]:
+    for _p in glob.glob(_pattern):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+# 1. Load environment variables natively (zero external dependency on python-dotenv)
+def _load_env():
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(_env_path):
+        try:
+            with open(_env_path, "r", encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if _line and not _line.startswith("#") and "=" in _line:
+                        _k, _v = _line.split("=", 1)
+                        _k = _k.strip()
+                        _v = _v.strip().strip("'\"")
+                        if _k:
+                            os.environ.setdefault(_k, _v)
+        except Exception:
+            pass
+
+_load_env()
 
 from bot.api import bot_api_client
 from bot.commands import COMMANDS_REGISTRY
