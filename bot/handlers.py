@@ -52,9 +52,10 @@ async def process_update(update: Dict[str, Any]) -> None:
                 logger.info("Blocked user %d attempted command '%s'", user_id, text)
                 if chat_id > 0:  # In private chats, notify the user
                     from bot.api import bot_api_client
+                    from utils.typography import to_bold_sans
                     await bot_api_client.send_message(
                         chat_id,
-                        "🚫 <b>Access Denied</b>\n\n"
+                        f"🚫 {to_bold_sans('ACCESS DENIED')}\n\n"
                         "You have been permanently blocked by the bot owner and cannot use Aaruu Music.",
                     )
                 # In groups, drop silently to prevent spam

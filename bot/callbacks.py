@@ -4,6 +4,7 @@ Processes button clicks from Rich Messages, validates sessions, checks permissio
 and triggers instant UI updates with clean typography and owner access control.
 """
 
+import time
 from typing import Any, Dict
 from bot.api import bot_api_client
 from bot.permissions import is_chat_admin, is_sudo
@@ -14,6 +15,7 @@ from player.manager import player_manager
 from utils.typography import to_small_caps
 
 db = Database()
+_DEBOUNCE_TIMESTAMPS: Dict[str, float] = {}
 
 
 async def handle_callback_query(update: Dict[str, Any]) -> None:
@@ -30,6 +32,14 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
 
     if not cq_id or not chat_id:
         return
+
+    # In-flight debounce: ignore duplicate rapid double-taps within 700ms on the same button
+    now = time.time()
+    debounce_key = f"{chat_id}:{message_id}:{data}"
+    if now - _DEBOUNCE_TIMESTAMPS.get(debounce_key, 0) < 0.7:
+        await bot_api_client.answer_callback_query(cq_id)
+        return
+    _DEBOUNCE_TIMESTAMPS[debounce_key] = now
 
     # Enforce permanent block by bot owner on interactive buttons
     if user_id and db.is_user_blocked(user_id):
@@ -81,23 +91,25 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
     if action == "pause":
         success, msg = await player_manager.pause(chat_id, session_id)
         await bot_api_client.answer_callback_query(cq_id, msg)
-        if success:
-            rich_msg = build_player_rich_message(state, queue)
-            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+        rich_msg = build_player_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
     elif action == "resume":
         success, msg = await player_manager.resume(chat_id, session_id)
         await bot_api_client.answer_callback_query(cq_id, msg)
-        if success:
-            rich_msg = build_player_rich_message(state, queue)
-            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+        rich_msg = build_player_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
     elif action == "replay":
         success, msg = await player_manager.replay(chat_id, session_id)
         await bot_api_client.answer_callback_query(cq_id, msg)
-        if success:
-            rich_msg = build_player_rich_message(state, queue)
-            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+        rich_msg = build_player_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+
+    elif action == "nowplaying":
+        await bot_api_client.answer_callback_query(cq_id)
+        rich_msg = build_player_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
     elif action == "skip":
         # Skip requires admin authorization in groups

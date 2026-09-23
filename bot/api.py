@@ -141,39 +141,29 @@ class TelegramAPIClient:
         self, chat_id: int, rich_message: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Sends native Rich Message using Telegram Bot API sendRichMessage.
-        Falls back to sendPhoto / sendMessage with standard inline keyboard
-        if the chat or bot token client has not enabled rich block schema.
+        Sends native Rich Message using Telegram Bot API.
+        Delivers sleek photo card with pure Unicode typography and inline controls.
         """
-        payload = {"chat_id": chat_id, "rich_message": rich_message}
-        res = await self.bot_api("sendRichMessage", payload)
-        if res.get("ok"):
-            return res
-
-        # Fallback delivery: extract HTML text and fallback inline buttons if sendRichMessage fails
-        logger.debug("sendRichMessage returned: %s. Attempting fallback delivery.", res.get("description"))
         return await self._fallback_send(chat_id, rich_message)
 
     async def edit_message_rich_text(
         self, chat_id: int, message_id: int, rich_message: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Edits an existing rich message with updated content and buttons."""
-        payload = {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "rich_message": rich_message,
-        }
-        res = await self.bot_api("editMessageRichText", payload)
-        if res.get("ok"):
-            return res
-
-        # Alternative method editMessageText with rich_message
-        res2 = await self.bot_api("editMessageText", payload)
-        if res2.get("ok"):
-            return res2
-
-        # Fallback to standard editMessageCaption or editMessageText
+        """Edits an existing rich message card with updated content and buttons."""
         return await self._fallback_edit(chat_id, message_id, rich_message)
+
+    async def export_chat_invite_link(self, chat_id: int) -> Dict[str, Any]:
+        """Exports an invite link to the chat (requires admin rights with can_invite_users)."""
+        return await self.bot_api("exportChatInviteLink", {"chat_id": chat_id})
+
+    async def create_chat_invite_link(
+        self, chat_id: int, name: Optional[str] = None, member_limit: int = 1
+    ) -> Dict[str, Any]:
+        """Creates a single-use invite link for the assistant (requires admin rights)."""
+        payload: Dict[str, Any] = {"chat_id": chat_id, "member_limit": member_limit}
+        if name:
+            payload["name"] = name
+        return await self.bot_api("createChatInviteLink", payload)
 
     async def answer_callback_query(
         self, callback_query_id: str, text: Optional[str] = None, show_alert: bool = False

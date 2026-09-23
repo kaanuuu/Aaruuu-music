@@ -181,14 +181,25 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
         + "\n".join(up_next_lines)
     )
 
+    thumbnail = (
+        state.current_track.thumbnail
+        if state.current_track and state.current_track.thumbnail
+        else "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
+    )
+
     action_buttons_row1 = [
+        {
+            "text": "◀ ᴘʟᴀʏᴇʀ",
+            "style": "primary",
+            "callback_data": f"player:nowplaying:{session}",
+        },
         {
             "text": "🔄 ʀᴇғʀᴇsʜ",
             "style": "primary",
             "callback_data": f"player:queue:{session}",
         },
         {
-            "text": "↩ ᴜɴᴅᴏ ʟᴀsᴛ",
+            "text": "↩ ᴜɴᴅᴏ",
             "style": "primary",
             "callback_data": f"queue:undo:{session}",
         },
@@ -211,6 +222,13 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
             "type": "heading",
             "text": to_bold_sans("AARUU MUSIC"),
             "size": 1,
+        },
+        {
+            "type": "photo",
+            "photo": {
+                "type": "photo",
+                "media": thumbnail,
+            },
         },
         {
             "type": "paragraph",

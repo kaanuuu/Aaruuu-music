@@ -129,18 +129,25 @@ class VoiceChatAssistant:
         self.app: Optional[Any] = None
         self.pytgcalls: Optional[Any] = None
         self.active_chats: Dict[int, Any] = {}
+        self.assistant_id: Optional[int] = None
+        self.assistant_username: Optional[str] = None
+        self.assistant_name: Optional[str] = None
+        self.is_connected: bool = False
 
     def check_status(self) -> Dict[str, Any]:
         """Returns assistant status without exposing secrets."""
         return {
             "configured": self.is_configured,
+            "connected": self.is_connected,
+            "assistant_id": self.assistant_id,
+            "assistant_username": self.assistant_username,
             "pytgcalls_installed": PYTGCALLS_AVAILABLE,
             "mode": (
                 "PyTgCalls VC Streaming"
-                if (self.is_configured and PYTGCALLS_AVAILABLE)
+                if (self.is_connected and self.pytgcalls)
                 else "Bot API (Rich Message UI Mode)"
             ),
-            "streaming_available": bool(self.is_configured and PYTGCALLS_AVAILABLE),
+            "streaming_available": bool(self.is_connected and self.pytgcalls),
         }
 
     async def start(self) -> None:
@@ -166,6 +173,22 @@ class VoiceChatAssistant:
                 session_string=self.session_string,
             )
             await self.app.start()
+            try:
+                me = await self.app.get_me()
+                self.assistant_id = me.id
+                self.assistant_username = me.username or ""
+                self.assistant_name = me.first_name or "Assistant"
+                self.is_connected = True
+                logger.info(
+                    "Voice Chat: Assistant connected as @%s (ID: %s, Name: %s)",
+                    self.assistant_username,
+                    self.assistant_id,
+                    self.assistant_name,
+                )
+            except Exception as e:
+                logger.warning("Voice Chat: Could not fetch assistant profile: %s", str(e))
+                self.is_connected = True
+
             self.pytgcalls = PyTgCalls(self.app)
             await self.pytgcalls.start()
             logger.info("Voice Chat: PyTgCalls VC assistant connected successfully!")
@@ -178,9 +201,25 @@ class VoiceChatAssistant:
             else:
                 logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", err_msg)
 
+    async def join_chat(self, chat_id_or_invite_link: Any) -> bool:
+        """Attempts to join a group using invite link or chat ID."""
+        if not self.app or not self.is_connected:
+            return False
+        try:
+            await self.app.join_chat(chat_id_or_invite_link)
+            logger.info("Voice Chat: Assistant successfully joined chat %s", chat_id_or_invite_link)
+            return True
+        except Exception as e:
+            logger.warning(
+                "Voice Chat: Assistant failed to join chat %s: %s",
+                chat_id_or_invite_link,
+                str(e),
+            )
+            return False
+
     async def play_audio(self, chat_id: int, audio_source: str) -> bool:
         """Streams audio_source (URL or file) into the group voice chat call."""
-        if self.pytgcalls:
+        if self.pytgcalls and self.is_connected:
             try:
                 logger.info(
                     "Voice Chat: PyTgCalls joining VC call in chat %s with audio source...",
@@ -190,11 +229,25 @@ class VoiceChatAssistant:
                 # PyTgCalls v1 API (join_group_call with AudioPiped)
                 if hasattr(self.pytgcalls, "join_group_call"):
                     stream = AudioPiped(audio_source) if AudioPiped else audio_source
-                    await self.pytgcalls.join_group_call(chat_id, stream)
+                    if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
+                        try:
+                            await self.pytgcalls.change_stream(chat_id, stream)
+                        except Exception:
+                            await self.pytgcalls.join_group_call(chat_id, stream)
+                    else:
+                        await self.pytgcalls.join_group_call(chat_id, stream)
+
                 # PyTgCalls v2 API (play with MediaStream)
                 elif hasattr(self.pytgcalls, "play"):
                     stream = MediaStream(audio_source) if MediaStream else audio_source
-                    await self.pytgcalls.play(chat_id, stream)
+                    if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
+                        try:
+                            await self.pytgcalls.change_stream(chat_id, stream)
+                        except Exception:
+                            await self.pytgcalls.play(chat_id, stream)
+                    else:
+                        await self.pytgcalls.play(chat_id, stream)
+
                 elif hasattr(self.pytgcalls, "join_call"):
                     await self.pytgcalls.join_call(chat_id, audio_source)
 

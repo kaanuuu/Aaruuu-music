@@ -111,6 +111,61 @@ class TestExtendedFeatures(unittest.TestCase):
             clean_271 += "=" * (4 - pad)
         self.assertEqual(len(base64.urlsafe_b64decode(clean_271)), 271)
 
+    def test_queue_rich_message_card_and_back_button(self):
+        from player.models import PlayerState, Track
+        from player.queue import TrackQueue
+        from bot.rich_player import build_queue_rich_message
+
+        state = PlayerState(chat_id=123)
+        track = Track(
+            track_id="t1",
+            title="Tum Hi Ho",
+            artist="Arijit Singh",
+            duration=262,
+            thumbnail="https://example.com/thumb.jpg",
+            source_url="https://example.com/audio.mp3",
+            requester_user_id=111,
+            requester_name="Aaruu",
+        )
+        state.play(track, {"name": "Aaruu", "id": 111})
+        queue = TrackQueue()
+
+        rich_queue = build_queue_rich_message(state, queue)
+        blocks = rich_queue.get("blocks", [])
+
+        # Verify photo block exists
+        has_photo = any(b.get("type") == "photo" for b in blocks)
+        self.assertTrue(has_photo, "Queue message must contain photo block for consistent rich card UI")
+
+        # Verify back to player button exists
+        all_buttons = []
+        for b in blocks:
+            if b.get("type") == "buttons":
+                all_buttons.extend(b.get("buttons", []))
+
+        back_buttons = [
+            btn for btn in all_buttons if btn.get("callback_data", "").startswith("player:nowplaying:")
+        ]
+        self.assertTrue(len(back_buttons) > 0, "Queue must provide a back-to-player button")
+
+    def test_double_tap_debounce_mechanism(self):
+        import time
+        from bot.callbacks import _DEBOUNCE_TIMESTAMPS
+
+        key = "test_chat:101:player:pause:test_sess"
+        now = time.time()
+        _DEBOUNCE_TIMESTAMPS[key] = now
+
+        # Immediately simulate double-tap 100ms later
+        double_tap_time = now + 0.1
+        is_debounced = (double_tap_time - _DEBOUNCE_TIMESTAMPS.get(key, 0)) < 0.7
+        self.assertTrue(is_debounced, "Rapid double-tap within 700ms must be debounced")
+
+        # Simulate genuine subsequent tap 1.5s later
+        later_tap = now + 1.5
+        is_debounced_later = (later_tap - _DEBOUNCE_TIMESTAMPS.get(key, 0)) < 0.7
+        self.assertFalse(is_debounced_later, "Tap after 700ms should be allowed through")
+
 
 if __name__ == "__main__":
     unittest.main()

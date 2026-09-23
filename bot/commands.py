@@ -88,6 +88,45 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
         )
         return
 
+    # Verify and auto-invite assistant in group chats before streaming
+    if chat_id < 0 and voice_assistant.is_configured:
+        if voice_assistant.is_connected and voice_assistant.assistant_id:
+            member_resp = await bot_api_client.get_chat_member(
+                chat_id, voice_assistant.assistant_id
+            )
+            is_member = False
+            if member_resp.get("ok"):
+                status = member_resp.get("result", {}).get("status", "")
+                if status in ("member", "administrator", "creator"):
+                    is_member = True
+
+            if not is_member:
+                # Attempt automatic invitation via chat invite link
+                invite_res = await bot_api_client.export_chat_invite_link(chat_id)
+                invite_link = invite_res.get("result")
+                joined = False
+                if invite_link:
+                    joined = await voice_assistant.join_chat(invite_link)
+
+                if not joined:
+                    asst_tag = (
+                        f"@{voice_assistant.assistant_username}"
+                        if voice_assistant.assistant_username
+                        else "Assistant"
+                    )
+                    if status_msg_id:
+                        await bot_api_client.delete_message(chat_id, status_msg_id)
+                    await bot_api_client.send_message(
+                        chat_id,
+                        f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
+                        f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
+                        f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
+                        f"1. Give this bot 'Invite Users via Link' permission so it can automatically invite the assistant.\n"
+                        f"2. Or add {asst_tag} directly to this group and start the Voice Chat.\n\n"
+                        f"Then send /play again to stream live in VC! 🎵",
+                    )
+                    return
+
     is_now_playing, state, queue = await player_manager.play_or_queue(
         chat_id, track, {"id": user_id, "name": username}
     )
@@ -179,8 +218,10 @@ async def handle_skip(message: Dict[str, Any]) -> None:
         )
         return
 
-    success, msg, state, queue = await player_manager.skip(chat_id)
-    if success and state and state.current_track:
+    next_track, msg = await player_manager.skip(chat_id)
+    state = await player_manager.get_state(chat_id)
+    queue = await player_manager.get_queue(chat_id)
+    if next_track and state and state.current_track:
         rich_player = build_player_rich_message(state, queue)
         res = await bot_api_client.send_rich_message(chat_id, rich_player)
         state.player_message_id = res.get("result", {}).get("message_id")
