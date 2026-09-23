@@ -24,9 +24,13 @@ extractor = MediaExtractor()
 db = Database()
 BOT_START_TIME = time.time()
 
+SEARCH_CACHE: Dict[int, List[Any]] = {}
+
 # Only public user commands registered with Telegram BotFather menu
 COMMANDS_REGISTRY: List[Dict[str, str]] = [
     {"command": "play", "description": "Play or queue a song or URL"},
+    {"command": "search", "description": "Search songs with 1-5 selection buttons"},
+    {"command": "song", "description": "Search and play a specific song"},
     {"command": "pause", "description": "Pause current playback"},
     {"command": "resume", "description": "Resume paused audio"},
     {"command": "replay", "description": "Replay current song from 0:00"},
@@ -39,6 +43,7 @@ COMMANDS_REGISTRY: List[Dict[str, str]] = [
     {"command": "seek", "description": "Seek seconds into song (e.g. /seek 60)"},
     {"command": "volume", "description": "Adjust volume (1-100)"},
     {"command": "nowplaying", "description": "Show interactive player"},
+    {"command": "vc", "description": "Check Voice Chat connection & audio status"},
     {"command": "settings", "description": "View chat music settings"},
     {"command": "ping", "description": "Check bot latency and uptime"},
     {"command": "help", "description": "Interactive help and guides"},
@@ -120,7 +125,7 @@ async def handle_help(message: Dict[str, Any]) -> None:
     await bot_api_client.send_rich_message(chat_id, rich_msg)
 
 
-async def handle_play(message: Dict[str, Any], args_text: str) -> None:
+async def handle_search(message: Dict[str, Any], args_text: str) -> None:
     chat_id = message["chat"]["id"]
     user = message.get("from", {})
     user_id = user.get("id", 0)
@@ -129,25 +134,108 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
     if not args_text.strip():
         await bot_api_client.send_message(
             chat_id,
-            f"🎵 {to_bold_sans('USAGE')}: /play <song name or link>\n"
-            f"💡 {to_small_caps('example')}: /play barsaat banjaare",
+            f"🔍 {to_bold_sans('SEARCH USAGE')}: /search <song name or keyword>\n"
+            f"💡 {to_small_caps('example')}: /search bairan",
         )
         return
 
-    # Inform user of resolution
     status_msg = await bot_api_client.send_message(
-        chat_id, f"🔎 {to_small_caps('searching and preparing')}: {sanitize_text(args_text, 50)}..."
+        chat_id, f"🔎 {to_small_caps('searching songs for')}: {sanitize_text(args_text, 50)}..."
     )
     status_msg_id = status_msg.get("result", {}).get("message_id")
 
-    track = await extractor.extract(args_text, user_id, username)
-    if not track:
-        if status_msg_id:
-            await bot_api_client.delete_message(chat_id, status_msg_id)
+    tracks = await extractor.search_tracks(args_text, limit=5, requester_id=user_id, requester_name=username)
+
+    if status_msg_id:
+        await bot_api_client.delete_message(chat_id, status_msg_id)
+
+    if not tracks:
         await bot_api_client.send_message(
-            chat_id, f"❌ {to_small_caps('unable to resolve audio. please try another song name.')}"
+            chat_id, f"❌ {to_small_caps('no matching songs found for:')} {sanitize_text(args_text, 40)}"
         )
         return
+
+    SEARCH_CACHE[chat_id] = tracks
+
+    text_lines = [f"🔎 {to_bold_sans('SEARCH RESULTS FOR')}: {sanitize_text(args_text, 40)}\n"]
+    buttons = []
+
+    for i, tr in enumerate(tracks, 1):
+        dur_str = format_time(tr.duration) if tr.duration else "Live"
+        text_lines.append(f"{i}️⃣ {to_bold_sans(tr.title[:45])}\n   👤 {tr.artist[:35]} | ⏱ {dur_str}\n")
+        buttons.append({"text": f"{i}️⃣", "callback_data": f"search_select:{i-1}"})
+
+    text_lines.append(f"\n👇 {to_small_caps('tap a number button below or type /play <number> to stream in VC')}:")
+
+    search_rich = {
+        "type": "rich_message",
+        "blocks": [
+            {
+                "type": "heading",
+                "text": to_bold_sans("MUSIC SEARCH RESULTS"),
+                "size": 1,
+            },
+            {
+                "type": "photo",
+                "photo": {
+                    "type": "photo",
+                    "media": tracks[0].thumbnail or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+                },
+            },
+            {
+                "type": "paragraph",
+                "text": "\n".join(text_lines),
+            },
+            {
+                "type": "buttons",
+                "buttons": buttons,
+            },
+            {
+                "type": "buttons",
+                "buttons": [
+                    {"text": "❌ " + to_small_caps("cancel search"), "callback_data": "search_select:close"}
+                ],
+            },
+        ],
+    }
+    await bot_api_client.send_rich_message(chat_id, search_rich)
+
+
+async def handle_search_select(
+    update: Dict[str, Any], cq_id: str, chat_id: int, message_id: int, user_id: int, username: str, data: str
+) -> None:
+    parts = data.split(":")
+    if len(parts) < 2:
+        await bot_api_client.answer_callback_query(cq_id)
+        return
+
+    val = parts[1]
+    if val == "close":
+        await bot_api_client.answer_callback_query(cq_id, "Search closed.")
+        await bot_api_client.delete_message(chat_id, message_id)
+        return
+
+    try:
+        idx = int(val)
+    except ValueError:
+        await bot_api_client.answer_callback_query(cq_id)
+        return
+
+    tracks = SEARCH_CACHE.get(chat_id, [])
+    if not tracks or idx >= len(tracks):
+        await bot_api_client.answer_callback_query(cq_id, "Search results expired. Try /search again.", show_alert=True)
+        return
+
+    track = tracks[idx]
+    await bot_api_client.answer_callback_query(cq_id, f"Playing '{track.title}'...")
+    await bot_api_client.delete_message(chat_id, message_id)
+
+    fake_msg = {"chat": {"id": chat_id}, "from": {"id": user_id, "first_name": username}}
+    await _play_track_direct(fake_msg, track, user_id, username)
+
+
+async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, username: str) -> None:
+    chat_id = message["chat"]["id"]
 
     # Verify and auto-invite assistant in group chats before streaming
     if chat_id < 0 and voice_assistant.is_configured:
@@ -162,7 +250,6 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
                     is_member = True
 
             if not is_member:
-                # Attempt automatic invitation via chat invite link
                 invite_res = await bot_api_client.export_chat_invite_link(chat_id)
                 invite_link = invite_res.get("result")
                 joined = False
@@ -175,16 +262,14 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
                         if voice_assistant.assistant_username
                         else "Assistant"
                     )
-                    if status_msg_id:
-                        await bot_api_client.delete_message(chat_id, status_msg_id)
                     await bot_api_client.send_message(
                         chat_id,
                         f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
                         f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
                         f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
-                        f"1. Give this bot 'Invite Users via Link' permission so it can automatically invite the assistant.\n"
-                        f"2. Or add {asst_tag} directly to this group and start the Voice Chat.\n\n"
-                        f"Then send /play again to stream live in VC! 🎵",
+                        f"1. Add {asst_tag} directly to this group as a member.\n"
+                        f"2. Start Video Chat / Voice Chat in the group.\n\n"
+                        f"Then send /play again to stream live! 🎵",
                     )
                     return
 
@@ -192,15 +277,10 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
         chat_id, track, {"id": user_id, "name": username}
     )
 
-    if status_msg_id:
-        await bot_api_client.delete_message(chat_id, status_msg_id)
-
-    # If voice assistant failed to stream (e.g. Assistant not in group or Voice Chat not active)
     if voice_assistant.last_error and not state.is_playing and not is_now_playing:
         err_text = voice_assistant.last_error
         asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
-        
-        # Assistant not in group error
+
         if "ASSISTANT NOT IN GROUP" in err_text or "not in this group" in err_text.lower():
             await bot_api_client.send_message(
                 chat_id,
@@ -213,7 +293,6 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
             )
             return
 
-        # Voice Chat not active error
         vc_alert = {
             "type": "rich_message",
             "blocks": [
@@ -273,6 +352,51 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
             f"➕ {to_small_caps('added to queue')}: {track.title}\n"
             f"📍 {to_small_caps('position')}: #{len(queue)}",
         )
+
+
+async def handle_play(message: Dict[str, Any], args_text: str) -> None:
+    chat_id = message["chat"]["id"]
+    user = message.get("from", {})
+    user_id = user.get("id", 0)
+    username = user.get("username") or user.get("first_name") or "User"
+
+    if not args_text.strip():
+        await bot_api_client.send_message(
+            chat_id,
+            f"🎵 {to_bold_sans('USAGE')}: /play <song name or link>\n"
+            f"💡 {to_small_caps('example')}: /play barsaat banjaare",
+        )
+        return
+
+    # Check if user typed a numerical selection index from search results (e.g. /play 1)
+    clean_arg = args_text.strip()
+    if clean_arg.isdigit():
+        idx = int(clean_arg) - 1
+        cached_tracks = SEARCH_CACHE.get(chat_id, [])
+        if cached_tracks and 0 <= idx < len(cached_tracks):
+            selected_track = cached_tracks[idx]
+            await _play_track_direct(message, selected_track, user_id, username)
+            return
+
+    # Inform user of resolution
+    status_msg = await bot_api_client.send_message(
+        chat_id, f"🔎 {to_small_caps('searching and preparing')}: {sanitize_text(args_text, 50)}..."
+    )
+    status_msg_id = status_msg.get("result", {}).get("message_id")
+
+    track = await extractor.extract(args_text, user_id, username)
+    if status_msg_id:
+        await bot_api_client.delete_message(chat_id, status_msg_id)
+
+    if not track or not track.stream_url:
+        await bot_api_client.send_message(
+            chat_id,
+            f"❌ {to_small_caps('could not find audio stream for:')} \"{sanitize_text(args_text, 40)}\"\n"
+            f"💡 {to_small_caps('try searching with')}: /search {sanitize_text(args_text, 30)}",
+        )
+        return
+
+    await _play_track_direct(message, track, user_id, username)
 
 
 async def handle_pause(message: Dict[str, Any]) -> None:
@@ -469,6 +593,34 @@ async def handle_nowplaying(message: Dict[str, Any]) -> None:
     msg_id = res.get("result", {}).get("message_id")
     state.player_message_id = msg_id
     state.player_message_chat_id = chat_id
+
+
+async def handle_vc_status(message: Dict[str, Any]) -> None:
+    chat_id = message["chat"]["id"]
+    asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
+
+    asst_ok = voice_assistant.is_connected
+    pytgcalls_ok = bool(voice_assistant.pytgcalls)
+    active_in_chat = chat_id in voice_assistant.active_chats
+
+    msg_lines = [
+        f"🎙 {to_bold_sans('VOICE CHAT DIAGNOSTICS')}\n",
+        f"• {to_bold_sans('Assistant Client')}: {'✅ Connected (' + asst_tag + ')' if asst_ok else '❌ Disconnected'}",
+        f"• {to_bold_sans('PyTgCalls Engine')}: {'✅ Active' if pytgcalls_ok else '⚠️ Not Active'}",
+        f"• {to_bold_sans('Active in this Chat')}: {'✅ Yes' if active_in_chat else '❌ No'}",
+    ]
+    if voice_assistant.last_error:
+        msg_lines.append(f"\n⚠️ {to_bold_sans('Last Voice Error')}:\n`{voice_assistant.last_error[:150]}`")
+
+    msg_lines.append(
+        f"\n💡 {to_bold_sans('IF NO AUDIO IS HEARD IN VC')}:\n"
+        f"1. Make sure {asst_tag} is added to this group as a member/admin.\n"
+        f"2. Ensure group Voice Chat is started in Telegram group header.\n"
+        f"3. In Telegram VC window, tap {asst_tag} -> set {to_bold_sans('Volume to 200%')} & check if unmuted!\n"
+        f"4. Give {asst_tag} 'Manage Video Chats' permission in group settings."
+    )
+
+    await bot_api_client.send_message(chat_id, "\n".join(msg_lines))
 
 
 async def handle_settings(message: Dict[str, Any]) -> None:

@@ -50,6 +50,14 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         )
         return
 
+    # Check for Search callbacks: search_select:<index>
+    if data.startswith("search_select:"):
+        from bot.commands import handle_search_select
+        await handle_search_select(
+            update, cq_id, chat_id, message_id, user_id, from_user.get("first_name", "User"), data
+        )
+        return
+
     # Check for Help callbacks: help:<section>
     if data.startswith("help:"):
         section = data.split(":", 1)[1]

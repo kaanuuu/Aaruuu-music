@@ -15,7 +15,7 @@ import re
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from player.models import Track
 from utils.escaping import sanitize_text
 from utils.logging import logger
@@ -44,11 +44,8 @@ class YtDlpQuietLogger:
 class MediaExtractor:
     """
     Extracts track metadata with multi-source fallback to prevent cloud datacenter IP blocks.
-    Guarantees that YouTube URLs always show their real video thumbnail and title,
-    while audio streams are resolved via mobile client emulation or unblocked audio CDNs.
+    Guarantees that songs are matched accurately from JioSaavn, YouTube, and SoundCloud.
     """
-
-    SAFE_FALLBACK_AUDIO = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
     def __init__(self):
         self.cookies_path = os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES")
@@ -206,7 +203,7 @@ class MediaExtractor:
         track = await loop.run_in_executor(
             None, self._extract_ytdlp, clean_input, is_url, requester_id, requester_name
         )
-        if track:
+        if track and track.stream_url and track.stream_url.startswith("http"):
             if yt_meta and yt_meta.get("thumbnail"):
                 track.thumbnail = yt_meta["thumbnail"]
                 if yt_meta.get("title") and ("unknown" in track.title.lower() or track.title == clean_input):
@@ -215,24 +212,220 @@ class MediaExtractor:
                     track.artist = yt_meta["artist"]
             return track
 
-        # Step 5: Graceful synthetic track creation so player and queue never break
-        logger.info("Generating safe audio track for query: %s", clean_input)
-        final_title = yt_meta["title"] if yt_meta else (sanitize_text(clean_input, 64) or "Unknown Song")
-        final_artist = yt_meta["artist"] if yt_meta else "Aaruu Music Stream"
-        final_thumb = yt_meta["thumbnail"] if yt_meta else DEFAULT_THUMBNAIL
-        final_url = yt_meta["source_url"] if yt_meta else (clean_input if is_url else f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_input)}")
+        logger.warning("Extractor: No valid stream URL found for query '%s'", clean_input)
+        return None
 
-        return Track(
-            track_id=uuid.uuid4().hex[:8],
-            title=final_title,
-            artist=final_artist,
-            duration=210,
-            thumbnail=final_thumb,
-            source_url=final_url,
-            stream_url=self.SAFE_FALLBACK_AUDIO,
-            requester_user_id=requester_id,
-            requester_name=requester_name,
+    async def search_tracks(
+        self, query: str, limit: int = 5, requester_id: int = 0, requester_name: str = ""
+    ) -> List[Track]:
+        """Searches top matching tracks across YouTube Data API, JioSaavn, and yt-dlp."""
+        clean_input = query.strip()
+        if not clean_input:
+            return []
+
+        loop = asyncio.get_running_loop()
+
+        # 1. Search YouTube API v3 if YOUTUBE_API_KEY is configured
+        yt_api_results = await loop.run_in_executor(
+            None, self._search_youtube_api_v3, clean_input, limit, requester_id, requester_name
         )
+
+        # 2. Search JioSaavn
+        jio_results = await loop.run_in_executor(
+            None, self._extract_jiosaavn_multi, clean_input, limit, requester_id, requester_name
+        )
+
+        # 3. Search YouTube multi results via yt-dlp
+        yt_results = await loop.run_in_executor(
+            None, self._extract_ytdlp_multi, clean_input, limit, requester_id, requester_name
+        )
+
+        combined: List[Track] = []
+        seen_titles = set()
+
+        for tr in (yt_api_results + jio_results + yt_results):
+            key = tr.title.lower().strip()
+            if key not in seen_titles and tr.stream_url and tr.stream_url.startswith("http"):
+                seen_titles.add(key)
+                combined.append(tr)
+                if len(combined) >= limit:
+                    break
+
+        return combined
+
+    def _search_youtube_api_v3(
+        self, query: str, limit: int, requester_id: int, requester_name: str
+    ) -> List[Track]:
+        api_key = os.getenv("YOUTUBE_API_KEY") or os.getenv("YT_API_KEY")
+        if not api_key:
+            return []
+
+        tracks = []
+        try:
+            encoded_query = urllib.parse.quote(query)
+            api_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults={limit}&q={encoded_query}&key={api_key.strip()}"
+            req = urllib.request.Request(
+                api_url,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    items = data.get("items", [])
+                    for item in items:
+                        vid_id = item.get("id", {}).get("videoId")
+                        if not vid_id:
+                            continue
+                        snippet = item.get("snippet", {})
+                        title = sanitize_text(snippet.get("title") or query, 80)
+                        channel = sanitize_text(snippet.get("channelTitle") or "YouTube", 60)
+                        thumbs = snippet.get("thumbnails", {})
+                        thumb = thumbs.get("high", {}).get("url") or thumbs.get("default", {}).get("url") or f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
+
+                        source_url = f"https://www.youtube.com/watch?v={vid_id}"
+                        ytdl_tr = self._extract_ytdlp(source_url, is_url=True, requester_id=requester_id, requester_name=requester_name)
+                        if ytdl_tr and ytdl_tr.stream_url:
+                            ytdl_tr.title = title
+                            ytdl_tr.artist = channel
+                            ytdl_tr.thumbnail = thumb
+                            tracks.append(ytdl_tr)
+                        else:
+                            jio_tr = self._extract_jiosaavn(title, requester_id, requester_name)
+                            if jio_tr and jio_tr.stream_url:
+                                jio_tr.title = title
+                                jio_tr.artist = channel
+                                jio_tr.thumbnail = thumb
+                                jio_tr.source_url = source_url
+                                tracks.append(jio_tr)
+        except Exception as e:
+            logger.debug("YouTube API v3 search note: %s", str(e))
+        return tracks
+
+    @staticmethod
+    def _extract_stream_url_from_saavn_item(item: Dict[str, Any]) -> Optional[str]:
+        """Extracts the direct high-quality audio CDN URL (saavncdn.com .mp3 / .m4a) from a JioSaavn API item."""
+        if not isinstance(item, dict):
+            return None
+
+        # Check downloadUrl or download_url list (highest quality first)
+        download_urls = item.get("downloadUrl") or item.get("download_url") or item.get("download_urls") or []
+        if isinstance(download_urls, list) and download_urls:
+            for d in reversed(download_urls):
+                if isinstance(d, dict):
+                    url = d.get("url") or d.get("link")
+                    if url and isinstance(url, str) and url.startswith("http"):
+                        return url
+                elif isinstance(d, str) and d.startswith("http"):
+                    return d
+
+        # Direct media keys in item dict
+        for key in ("media_url", "encrypted_media_url", "stream_url", "media_path", "preview_url"):
+            val = item.get(key)
+            if val and isinstance(val, str) and val.startswith("http") and "jiosaavn.com/song/" not in val:
+                return val
+
+        return None
+
+    def _extract_jiosaavn_multi(
+        self, query: str, limit: int, requester_id: int, requester_name: str
+    ) -> List[Track]:
+        tracks = []
+        api_endpoints = [
+            f"https://saavn.dev/api/search/songs?query={urllib.parse.quote(query)}&limit={limit}",
+            f"https://saavn.me/search/songs?query={urllib.parse.quote(query)}&limit={limit}",
+            f"https://saavn-api.vercel.app/search?query={urllib.parse.quote(query)}",
+        ]
+
+        for api_url in api_endpoints:
+            try:
+                req = urllib.request.Request(
+                    api_url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                )
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        results = []
+                        if isinstance(data, dict):
+                            results = data.get("data", {}).get("results", []) or data.get("results", []) or data.get("data", [])
+                        elif isinstance(data, list):
+                            results = data
+
+                        if isinstance(results, list) and results:
+                            for item in results:
+                                if not isinstance(item, dict):
+                                    continue
+                                title = sanitize_text(item.get("name") or item.get("title") or query, 80)
+                                artists = sanitize_text(item.get("primaryArtists") or item.get("artist") or item.get("singers") or "JioSaavn", 60)
+                                duration = int(item.get("duration") or 210)
+
+                                images = item.get("image") or item.get("images") or []
+                                thumb = DEFAULT_THUMBNAIL
+                                if isinstance(images, list) and images:
+                                    last_img = images[-1]
+                                    if isinstance(last_img, dict):
+                                        thumb = last_img.get("url") or last_img.get("link") or DEFAULT_THUMBNAIL
+                                    elif isinstance(last_img, str):
+                                        thumb = last_img
+                                elif isinstance(images, str) and images:
+                                    thumb = images
+
+                                stream_url = self._extract_stream_url_from_saavn_item(item)
+                                page_url = item.get("url") or item.get("perma_url") or f"https://www.jiosaavn.com/song/{urllib.parse.quote(title)}"
+
+                                if stream_url and stream_url.startswith("http"):
+                                    tracks.append(
+                                        Track(
+                                            track_id=str(item.get("id") or uuid.uuid4().hex[:8]),
+                                            title=title,
+                                            artist=artists,
+                                            duration=duration,
+                                            thumbnail=thumb,
+                                            source_url=page_url,
+                                            stream_url=stream_url,
+                                            requester_user_id=requester_id,
+                                            requester_name=requester_name,
+                                        )
+                                    )
+                            if tracks:
+                                break
+            except Exception as e:
+                logger.debug("JioSaavn multi search endpoint note: %s", str(e))
+
+        return tracks
+
+    def _extract_ytdlp_multi(
+        self, query: str, limit: int, requester_id: int, requester_name: str
+    ) -> List[Track]:
+        tracks = []
+        try:
+            import yt_dlp
+            opts = self._get_ydl_opts()
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                if info and "entries" in info:
+                    for entry in (info.get("entries") or []):
+                        if not entry:
+                            continue
+                        stream_url = entry.get("url")
+                        if not stream_url or not stream_url.startswith("http"):
+                            continue
+                        tracks.append(
+                            Track(
+                                track_id=str(entry.get("id") or uuid.uuid4().hex[:8]),
+                                title=sanitize_text(entry.get("title") or query, 80),
+                                artist=sanitize_text(entry.get("artist") or entry.get("uploader") or entry.get("channel"), 60) or "YouTube",
+                                duration=int(entry.get("duration") or 180),
+                                thumbnail=entry.get("thumbnail") or DEFAULT_THUMBNAIL,
+                                source_url=entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}",
+                                stream_url=stream_url,
+                                requester_user_id=requester_id,
+                                requester_name=requester_name,
+                            )
+                        )
+        except Exception as e:
+            logger.debug("yt-dlp multi search note: %s", str(e))
+        return tracks
 
     @staticmethod
     def _clean_search_query(raw_query: str) -> str:
@@ -334,48 +527,7 @@ class MediaExtractor:
         self, query: str, requester_id: int, requester_name: str
     ) -> Optional[Track]:
         """Free public JioSaavn search API for instant Indian & international song lookup."""
-        try:
-            encoded_query = urllib.parse.quote(query)
-            api_url = f"https://saavn.dev/api/search/songs?query={encoded_query}&limit=1"
-            req = urllib.request.Request(
-                api_url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    results = data.get("data", {}).get("results", [])
-                    if results:
-                        item = results[0]
-                        title = sanitize_text(item.get("name") or query, 80)
-                        artists = sanitize_text(item.get("primaryArtists") or "JioSaavn", 60)
-                        duration = int(item.get("duration") or 210)
-                        
-                        # Find best thumbnail
-                        images = item.get("image", [])
-                        thumb = DEFAULT_THUMBNAIL
-                        if isinstance(images, list) and images:
-                            thumb = images[-1].get("url") or DEFAULT_THUMBNAIL
-                        elif isinstance(images, str) and images:
-                            thumb = images
-                        
-                        # Find audio download / stream URL
-                        stream_url = item.get("url") or f"https://www.jiosaavn.com/song/{urllib.parse.quote(title)}"
-                        download_urls = item.get("downloadUrl", [])
-                        if isinstance(download_urls, list) and download_urls:
-                            stream_url = download_urls[-1].get("url") or stream_url
-
-                        return Track(
-                            track_id=str(item.get("id") or uuid.uuid4().hex[:8]),
-                            title=title,
-                            artist=artists,
-                            duration=duration,
-                            thumbnail=thumb,
-                            source_url=item.get("url") or f"https://www.jiosaavn.com/song/{urllib.parse.quote(title)}",
-                            stream_url=stream_url,
-                            requester_user_id=requester_id,
-                            requester_name=requester_name,
-                        )
-        except Exception as e:
-            logger.debug("JioSaavn search failed: %s", str(e))
+        tracks = self._extract_jiosaavn_multi(query, limit=1, requester_id=requester_id, requester_name=requester_name)
+        if tracks:
+            return tracks[0]
         return None

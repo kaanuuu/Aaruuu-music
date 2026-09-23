@@ -72,8 +72,10 @@ async def process_update(update: Dict[str, Any]) -> None:
                 await cmd.handle_start(message, args)
             elif clean_cmd == "help":
                 await cmd.handle_help(message)
-            elif clean_cmd == "play":
+            elif clean_cmd in ("play", "vplay"):
                 await cmd.handle_play(message, args)
+            elif clean_cmd in ("search", "song"):
+                await cmd.handle_search(message, args)
             elif clean_cmd == "pause":
                 await cmd.handle_pause(message)
             elif clean_cmd == "resume":
@@ -96,6 +98,8 @@ async def process_update(update: Dict[str, Any]) -> None:
                 await cmd.handle_volume(message, args)
             elif clean_cmd == "nowplaying":
                 await cmd.handle_nowplaying(message)
+            elif clean_cmd in ("vc", "vcstatus", "status"):
+                await cmd.handle_vc_status(message)
             elif clean_cmd == "settings":
                 await cmd.handle_settings(message)
             elif clean_cmd == "block":

@@ -516,14 +516,18 @@ class VoiceChatAssistant:
                     chat_id,
                 )
 
-                # Construct stream with FFmpeg reconnect flags so HTTP streams don't stall at 0:02
-                ffmpeg_params = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+                # Construct stream with FFmpeg headers & reconnect flags so HTTP audio CDNs (JioSaavn / YouTube) don't send 403 or silence
+                ffmpeg_params = (
+                    '-headers "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n'
+                    'Referer: https://www.jiosaavn.com/\r\n" '
+                    '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+                )
                 
                 def _build_stream(target_url: str):
                     if MediaStream:
                         try:
                             from pytgcalls.types import AudioQuality
-                            return MediaStream(target_url, audio_parameters=AudioQuality.HIGH)
+                            return MediaStream(target_url, audio_parameters=AudioQuality.HIGH, ffmpeg_parameters=ffmpeg_params)
                         except Exception:
                             try:
                                 return MediaStream(target_url, ffmpeg_parameters=ffmpeg_params)

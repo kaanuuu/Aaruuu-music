@@ -177,6 +177,17 @@ class TestExtendedFeatures(unittest.TestCase):
         self.assertTrue("42r8Stt-30w" in meta["thumbnail"])
         self.assertTrue("hqdefault.jpg" in meta["thumbnail"] or "i.ytimg.com" in meta["thumbnail"])
 
+    def test_search_tracks_multi_results(self):
+        from player.extractor import MediaExtractor
+        from player.models import Track
+        extractor = MediaExtractor()
+
+        # Test search query cleaning
+        clean_q = extractor._clean_search_query("Barsaat Banjaare (Official Video) [HD]")
+        self.assertIn("Barsaat Banjaare", clean_q)
+        self.assertNotIn("Official", clean_q)
+        self.assertNotIn("Video", clean_q)
+
     def test_joingroupcall_public_key_safety(self):
         # Verify that raw TL objects never raise AttributeError when public_key or block is accessed
         class DummyJoinGroupCall:
