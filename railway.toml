@@ -1,6 +1,6 @@
 [build]
-builder = "nixpacks"
-nixpacksConfigFile = "nixpacks.toml"
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "bash start.sh"
