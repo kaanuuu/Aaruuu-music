@@ -26,8 +26,8 @@ class Track:
     created_at: float = field(default_factory=time.time)
 
     @property
-    def playable_source(self) -> str:
-        """Returns local file path if downloaded and exists, else stream_url, else source_url."""
+    def playable_source(self) -> Optional[str]:
+        """Returns local file path if downloaded and exists, else stream_url if valid. Never returns a watch webpage URL."""
         import os
         if hasattr(self, "local_filepath") and self.local_filepath and os.path.exists(self.local_filepath):
             try:
@@ -35,7 +35,12 @@ class Track:
                     return self.local_filepath
             except Exception:
                 pass
-        return self.stream_url or self.source_url
+        
+        # Ensure stream_url is a direct media stream URL and not a watch webpage URL
+        if self.stream_url and ("youtube.com/watch" not in self.stream_url and "youtu.be/" not in self.stream_url):
+            return self.stream_url
+            
+        return None
 
     def to_dict(self) -> Dict[str, Any]:
         return {

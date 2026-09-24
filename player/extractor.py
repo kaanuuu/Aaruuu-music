@@ -172,7 +172,7 @@ class MediaExtractor:
     ) -> Optional[Track]:
         """
         Extracts song metadata using a multi-tier fallback pipeline.
-        Guarantees that YouTube URLs always show their real video thumbnail and title.
+        If YouTube extraction is blocked/fails, falls back automatically to JioSaavn search.
         """
         clean_input = query_or_url.strip()
         if not clean_input:
@@ -181,77 +181,90 @@ class MediaExtractor:
         is_url = bool(re.match(r"^https?://", clean_input, re.IGNORECASE))
         loop = asyncio.get_running_loop()
 
-        # Step 1: Pre-resolve YouTube metadata if input is a YouTube link
+        # Check if the input is already a direct JioSaavn URL
+        if "jiosaavn.com" in clean_input.lower():
+            try:
+                from player.providers.jiosaavn import jiosaavn_provider
+                tracks = await loop.run_in_executor(None, jiosaavn_provider.resolve_url, clean_input, requester_id, requester_name)
+                if tracks:
+                    return tracks[0]
+            except Exception as e:
+                logger.warning("[EXTRACTOR] JioSaavn URL resolution failed: %s", str(e))
+
+        # Step 1: Pre-resolve YouTube metadata using oEmbed (always works even if yt-dlp is blocked)
         yt_meta = None
         if "youtu" in clean_input.lower():
             yt_meta = await loop.run_in_executor(None, self._extract_youtube_meta, clean_input)
 
-        # Step 1.5: If cookies are provided or direct YouTube URL supplied, attempt yt-dlp first
-        if self.cookies_path or "youtu" in clean_input.lower():
+        # Step 2: If YouTube link or search query, try YouTube extraction first
+        ytdl_track = None
+        if "youtu" in clean_input.lower() or is_url:
+            # Try to extract the direct stream using youtube_provider
+            from player.providers.youtube import youtube_provider
             ytdl_track = await loop.run_in_executor(
-                None, self._extract_ytdlp, clean_input, is_url, requester_id, requester_name
+                None, youtube_provider._extract_ytdlp, clean_input, True, requester_id, requester_name
             )
-            if ytdl_track and ytdl_track.stream_url and ytdl_track.stream_url.startswith("http"):
-                if yt_meta and yt_meta.get("thumbnail"):
-                    ytdl_track.thumbnail = yt_meta["thumbnail"]
+            
+            if ytdl_track and ytdl_track.stream_url:
+                # Merge oEmbed metadata if helpful
+                if yt_meta:
+                    if yt_meta.get("thumbnail"):
+                        ytdl_track.thumbnail = yt_meta["thumbnail"]
                     if yt_meta.get("title"):
                         ytdl_track.title = yt_meta["title"]
                     if yt_meta.get("artist"):
                         ytdl_track.artist = yt_meta["artist"]
-                logger.info("Extractor: Successfully extracted direct YouTube audio stream via yt-dlp")
+                logger.info("[EXTRACTOR] Successfully extracted direct YouTube stream via yt-dlp")
                 return ytdl_track
 
-        # Build clean search query for unblocked audio CDN lookups (JioSaavn / SoundCloud)
+        # Step 3: Fallback / Search stage
+        # Build search query: use resolved oEmbed metadata if available, otherwise raw input
         clean_query = clean_input
         if yt_meta and yt_meta.get("title"):
             clean_query = f"{yt_meta['title']} {yt_meta.get('artist', '')}"
         clean_query = self._clean_search_query(clean_query) or clean_input
 
-        # Step 2: Try JioSaavn search first for direct, unblocked 320kbps MP3 CDN stream
+        logger.info("[EXTRACTOR] Primary extraction failed or text search query. Trying JioSaavn fallback...")
+        
+        # Try JioSaavn
         jio_track = await loop.run_in_executor(
             None, self._extract_jiosaavn, clean_query, requester_id, requester_name
         )
-        if jio_track and jio_track.stream_url and jio_track.stream_url.startswith("http"):
+        if jio_track and jio_track.stream_url:
+            logger.info("[EXTRACTOR] JioSaavn fallback SUCCESS for query '%s' -> '%s'", clean_query, jio_track.title)
             if yt_meta:
-                jio_track.thumbnail = yt_meta["thumbnail"]
-                jio_track.title = yt_meta["title"]
-                jio_track.artist = yt_meta["artist"]
-                jio_track.source_url = yt_meta["source_url"]
+                # Retain original YouTube metadata but use playable JioSaavn stream
+                jio_track.thumbnail = yt_meta.get("thumbnail") or jio_track.thumbnail
+                jio_track.title = yt_meta.get("title") or jio_track.title
+                jio_track.artist = yt_meta.get("artist") or jio_track.artist
+                jio_track.source_url = yt_meta.get("source_url") or jio_track.source_url
             return jio_track
 
-        # Step 3: Try SoundCloud search for direct audio CDN stream
+        # Try SoundCloud
+        logger.info("[EXTRACTOR] JioSaavn fallback failed. Trying SoundCloud fallback...")
         sc_track = await loop.run_in_executor(
             None, self._extract_soundcloud, clean_query, requester_id, requester_name
         )
-        if sc_track and sc_track.stream_url and sc_track.stream_url.startswith("http"):
+        if sc_track and sc_track.stream_url:
+            logger.info("[EXTRACTOR] SoundCloud fallback SUCCESS for query '%s'", clean_query)
             if yt_meta:
-                sc_track.thumbnail = yt_meta["thumbnail"]
-                sc_track.title = yt_meta["title"]
-                sc_track.artist = yt_meta["artist"]
-                sc_track.source_url = yt_meta["source_url"]
+                sc_track.thumbnail = yt_meta.get("thumbnail") or sc_track.thumbnail
+                sc_track.title = yt_meta.get("title") or sc_track.title
+                sc_track.artist = yt_meta.get("artist") or sc_track.artist
+                sc_track.source_url = yt_meta.get("source_url") or sc_track.source_url
             return sc_track
 
-        # Step 4: Attempt direct extraction via yt-dlp
-        track = await loop.run_in_executor(
-            None, self._extract_ytdlp, clean_input, is_url, requester_id, requester_name
-        )
-        if track and track.stream_url and track.stream_url.startswith("http"):
-            if yt_meta and yt_meta.get("thumbnail"):
-                track.thumbnail = yt_meta["thumbnail"]
-                if yt_meta.get("title") and ("unknown" in track.title.lower() or track.title == clean_input):
-                    track.title = yt_meta["title"]
-                if yt_meta.get("artist") and ("unknown" in track.artist.lower() or track.artist == "Aaruu Music"):
-                    track.artist = yt_meta["artist"]
-            return track
+        # Try YouTube Provider search as a last resort (might get blocked, but worth a try)
+        if "youtu" not in clean_input.lower():
+            logger.info("[EXTRACTOR] All fallbacks failed. Trying final YouTube extraction...")
+            from player.providers.youtube import youtube_provider
+            yt_track = await loop.run_in_executor(
+                None, youtube_provider._extract_ytdlp, clean_input, False, requester_id, requester_name
+            )
+            if yt_track and yt_track.stream_url:
+                return yt_track
 
-        # Step 5: Final fallback to ytInitialData YouTube scraper
-        yt_sc_tracks = await loop.run_in_executor(
-            None, self._search_youtube_ytinitialdata, clean_query, 1, requester_id, requester_name
-        )
-        if yt_sc_tracks:
-            return yt_sc_tracks[0]
-
-        logger.warning("Extractor: No valid stream URL found for query '%s'", clean_input)
+        logger.warning("[EXTRACTOR] No valid direct audio stream found for query/URL '%s'", clean_input)
         return None
 
     async def search_tracks(
@@ -289,7 +302,7 @@ class MediaExtractor:
 
         for tr in (yt_scraper_results + yt_api_results + jio_results + yt_results):
             key = tr.title.lower().strip()
-            if key not in seen_titles and tr.stream_url and tr.stream_url.startswith("http"):
+            if key not in seen_titles:
                 seen_titles.add(key)
                 combined.append(tr)
                 if len(combined) >= limit:
@@ -350,10 +363,6 @@ class MediaExtractor:
                         thumb = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
                         source_url = f"https://www.youtube.com/watch?v={vid_id}"
 
-                        # Stream URL: try yt-dlp first, else fallback to source_url or JioSaavn
-                        ytdl_tr = self._extract_ytdlp(source_url, is_url=True, requester_id=requester_id, requester_name=requester_name)
-                        stream_url = ytdl_tr.stream_url if (ytdl_tr and ytdl_tr.stream_url) else source_url
-
                         tracks.append(
                             Track(
                                 track_id=vid_id,
@@ -362,7 +371,7 @@ class MediaExtractor:
                                 duration=duration,
                                 thumbnail=thumb,
                                 source_url=source_url,
-                                stream_url=stream_url,
+                                stream_url=None,
                                 requester_user_id=requester_id,
                                 requester_name=requester_name,
                             )

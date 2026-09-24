@@ -32,19 +32,37 @@ class JioSaavnProvider:
         self.timeout = 6
 
     def _request_api(self, endpoint: str) -> Optional[Any]:
-        """Performs a safe HTTP request to the JioSaavn API with retry, timeout, and verification."""
-        url = f"{self.api_base}{endpoint}"
-        logger.info("JioSaavn API Request: %s", url)
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            )
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                if resp.status == 200:
-                    return json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            logger.warning("JioSaavn API call failed on url '%s': %s", url, str(e))
+        """Performs a safe HTTP request to the JioSaavn API with dynamic endpoint fallbacks on DNS/network errors."""
+        bases = [self.api_base]
+        fallbacks = [
+            "https://saavn-api.vercel.app",
+            "https://saavn.me",
+            "https://jio-saavn-api.vercel.app",
+            "https://saavn-api-beta.vercel.app",
+            "https://saavn.dev"
+        ]
+        for f in fallbacks:
+            clean_f = f.rstrip("/")
+            if clean_f not in bases:
+                bases.append(clean_f)
+
+        for base in bases:
+            url = f"{base}{endpoint}"
+            logger.info("[JIOSAAVN] Querying endpoint: %s", url)
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        if data:
+                            # Cache the successful host to optimize subsequent tracks
+                            self.api_base = base
+                            return data
+            except Exception as e:
+                logger.warning("[JIOSAAVN] Endpoint failed '%s': %s", url, str(e))
         return None
 
     def _normalize_track(self, item: Dict[str, Any], requester_id: int = 0, requester_name: str = "Aaruu Music") -> Optional[Track]:

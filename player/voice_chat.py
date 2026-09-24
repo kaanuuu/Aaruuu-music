@@ -385,16 +385,26 @@ class VoiceChatAssistant:
             )
             return False
 
-    def is_call_active(self, chat_id: int) -> bool:
+    async def is_call_active(self, chat_id: int) -> bool:
         """Checks if there is an active PyTgCalls call session for the given chat_id."""
         if not self.pytgcalls:
             return False
+        import inspect
         # 1. Check pytgcalls.active_calls (standard in modern PyTgCalls)
         if hasattr(self.pytgcalls, "active_calls"):
             try:
                 calls = self.pytgcalls.active_calls
+                if inspect.iscoroutine(calls) or inspect.iscoroutinefunction(calls):
+                    calls = await calls
+                elif inspect.isawaitable(calls):
+                    calls = await calls
+                
                 if hasattr(calls, "__contains__"):
-                    return chat_id in calls
+                    try:
+                        if chat_id in calls:
+                            return True
+                    except Exception:
+                        pass
                 for c in calls:
                     if getattr(c, "chat_id", None) == chat_id:
                         return True
@@ -404,7 +414,22 @@ class VoiceChatAssistant:
         if hasattr(self.pytgcalls, "calls"):
             try:
                 calls = self.pytgcalls.calls
+                if inspect.iscoroutine(calls) or inspect.iscoroutinefunction(calls):
+                    calls = await calls
+                elif inspect.isawaitable(calls):
+                    calls = await calls
+                
                 if hasattr(calls, "__contains__"):
+                    try:
+                        if chat_id in calls:
+                            return True
+                    except Exception:
+                        pass
+                if isinstance(calls, list):
+                    for c in calls:
+                        if getattr(c, "chat_id", None) == chat_id:
+                            return True
+                elif isinstance(calls, dict):
                     return chat_id in calls
             except Exception:
                 pass
@@ -544,7 +569,7 @@ class VoiceChatAssistant:
                 logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object of type: %s", type(stream_obj).__name__)
 
                 async def _do_stream():
-                    already_connected = self.is_call_active(chat_id)
+                    already_connected = await self.is_call_active(chat_id)
                     # PyTgCalls v1 API (join_group_call)
                     if hasattr(self.pytgcalls, "join_group_call"):
                         if already_connected and hasattr(self.pytgcalls, "change_stream"):
