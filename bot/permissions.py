@@ -5,7 +5,7 @@ Centralizes authorization checks for bot owner, sudo users, and chat administrat
 
 import os
 import time
-from typing import Dict, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 from bot.api import bot_api_client
 from utils.logging import logger
 
