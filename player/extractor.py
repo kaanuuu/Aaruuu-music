@@ -450,70 +450,12 @@ class MediaExtractor:
     def _extract_jiosaavn_multi(
         self, query: str, limit: int, requester_id: int, requester_name: str
     ) -> List[Track]:
-        tracks = []
-        api_endpoints = [
-            f"https://saavn.dev/api/search/songs?query={urllib.parse.quote(query)}&limit={limit}",
-            f"https://saavn.me/search/songs?query={urllib.parse.quote(query)}&limit={limit}",
-            f"https://saavn-api.vercel.app/search?query={urllib.parse.quote(query)}",
-        ]
-
-        for api_url in api_endpoints:
-            try:
-                req = urllib.request.Request(
-                    api_url,
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                )
-                with urllib.request.urlopen(req, timeout=4) as resp:
-                    if resp.status == 200:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        results = []
-                        if isinstance(data, dict):
-                            results = data.get("data", {}).get("results", []) or data.get("results", []) or data.get("data", [])
-                        elif isinstance(data, list):
-                            results = data
-
-                        if isinstance(results, list) and results:
-                            for item in results:
-                                if not isinstance(item, dict):
-                                    continue
-                                title = sanitize_text(item.get("name") or item.get("title") or query, 80)
-                                artists = sanitize_text(item.get("primaryArtists") or item.get("artist") or item.get("singers") or "JioSaavn", 60)
-                                duration = int(item.get("duration") or 210)
-
-                                images = item.get("image") or item.get("images") or []
-                                thumb = DEFAULT_THUMBNAIL
-                                if isinstance(images, list) and images:
-                                    last_img = images[-1]
-                                    if isinstance(last_img, dict):
-                                        thumb = last_img.get("url") or last_img.get("link") or DEFAULT_THUMBNAIL
-                                    elif isinstance(last_img, str):
-                                        thumb = last_img
-                                elif isinstance(images, str) and images:
-                                    thumb = images
-
-                                stream_url = self._extract_stream_url_from_saavn_item(item)
-                                page_url = item.get("url") or item.get("perma_url") or f"https://www.jiosaavn.com/song/{urllib.parse.quote(title)}"
-
-                                if stream_url and stream_url.startswith("http"):
-                                    tracks.append(
-                                        Track(
-                                            track_id=str(item.get("id") or uuid.uuid4().hex[:8]),
-                                            title=title,
-                                            artist=artists,
-                                            duration=duration,
-                                            thumbnail=thumb,
-                                            source_url=page_url,
-                                            stream_url=stream_url,
-                                            requester_user_id=requester_id,
-                                            requester_name=requester_name,
-                                        )
-                                    )
-                            if tracks:
-                                break
-            except Exception as e:
-                logger.debug("JioSaavn multi search endpoint note: %s", str(e))
-
-        return tracks
+        try:
+            from player.providers.jiosaavn import jiosaavn_provider
+            return jiosaavn_provider.search(query, limit=limit, requester_id=requester_id, requester_name=requester_name)
+        except Exception as e:
+            logger.debug("JioSaavn provider search error in extractor: %s", str(e))
+            return []
 
     def _extract_ytdlp_multi(
         self, query: str, limit: int, requester_id: int, requester_name: str
@@ -648,9 +590,13 @@ class MediaExtractor:
         self, query: str, requester_id: int, requester_name: str
     ) -> Optional[Track]:
         """Free public JioSaavn search API for instant Indian & international song lookup."""
-        tracks = self._extract_jiosaavn_multi(query, limit=1, requester_id=requester_id, requester_name=requester_name)
-        if tracks:
-            return tracks[0]
+        try:
+            from player.providers.jiosaavn import jiosaavn_provider
+            tracks = jiosaavn_provider.search(query, limit=1, requester_id=requester_id, requester_name=requester_name)
+            if tracks:
+                return tracks[0]
+        except Exception as e:
+            logger.debug("JioSaavn provider single search error in extractor: %s", str(e))
         return None
 
     def _download_direct_url(self, url: str, dest_path: str) -> bool:

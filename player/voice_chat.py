@@ -6,6 +6,7 @@ If ASSISTANT_SESSION (or STRING_SESSION + API_ID + API_HASH) is configured, stre
 If not configured, operates in standalone Rich Message UI & queue management mode.
 """
 
+import asyncio
 import base64
 import os
 import struct
@@ -384,6 +385,32 @@ class VoiceChatAssistant:
             )
             return False
 
+    def is_call_active(self, chat_id: int) -> bool:
+        """Checks if there is an active PyTgCalls call session for the given chat_id."""
+        if not self.pytgcalls:
+            return False
+        # 1. Check pytgcalls.active_calls (standard in modern PyTgCalls)
+        if hasattr(self.pytgcalls, "active_calls"):
+            try:
+                calls = self.pytgcalls.active_calls
+                if hasattr(calls, "__contains__"):
+                    return chat_id in calls
+                for c in calls:
+                    if getattr(c, "chat_id", None) == chat_id:
+                        return True
+            except Exception:
+                pass
+        # 2. Check pytgcalls.calls
+        if hasattr(self.pytgcalls, "calls"):
+            try:
+                calls = self.pytgcalls.calls
+                if hasattr(calls, "__contains__"):
+                    return chat_id in calls
+            except Exception:
+                pass
+        # 3. Fallback to our internal active_chats tracker
+        return chat_id in self.active_chats
+
     async def play_audio(self, chat_id: int, audio_source: str, seek_seconds: float = 0.0) -> bool:
         """Streams audio_source (URL or file) into the group voice chat call."""
         if self.pytgcalls and self.is_connected:
@@ -517,26 +544,23 @@ class VoiceChatAssistant:
                 logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object of type: %s", type(stream_obj).__name__)
 
                 async def _do_stream():
+                    already_connected = self.is_call_active(chat_id)
                     # PyTgCalls v1 API (join_group_call)
                     if hasattr(self.pytgcalls, "join_group_call"):
-                        logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls join_group_call() for chat %s", chat_id)
-                        if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
-                            try:
-                                logger.info("[MEDIA-PIPELINE DEBUG] Attempting to change stream...")
-                                await self.pytgcalls.change_stream(chat_id, stream_obj)
-                            except Exception as change_err:
-                                logger.info("[MEDIA-PIPELINE DEBUG] change_stream failed (%s), falling back to join_group_call", str(change_err))
-                                await self.pytgcalls.join_group_call(chat_id, stream_obj)
+                        if already_connected and hasattr(self.pytgcalls, "change_stream"):
+                            logger.info("[MEDIA-PIPELINE DEBUG] Already connected in PyTgCalls v1. Changing stream...")
+                            await self.pytgcalls.change_stream(chat_id, stream_obj)
                         else:
+                            logger.info("[MEDIA-PIPELINE DEBUG] Invoking PyTgCalls join_group_call() for chat %s", chat_id)
                             await self.pytgcalls.join_group_call(chat_id, stream_obj)
 
                     # PyTgCalls v2 API (play)
                     elif hasattr(self.pytgcalls, "play"):
-                        logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls play() for chat %s", chat_id)
+                        logger.info("[MEDIA-PIPELINE DEBUG] Invoking PyTgCalls play() for chat %s (already_connected=%s)", chat_id, already_connected)
                         await self.pytgcalls.play(chat_id, stream_obj)
 
                     elif hasattr(self.pytgcalls, "join_call"):
-                        logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls join_call() for chat %s", chat_id)
+                        logger.info("[MEDIA-PIPELINE DEBUG] Invoking PyTgCalls join_call() for chat %s", chat_id)
                         await self.pytgcalls.join_call(chat_id, stream_obj)
                     else:
                         raise AttributeError("PyTgCalls instance has no join_group_call, play, or join_call method.")
@@ -548,7 +572,7 @@ class VoiceChatAssistant:
                     # If CHANNEL_INVALID or peer missing on first try, attempt 1 retry after forcing peer resolution
                     err_str = str(inner_e).lower()
                     logger.warning("[MEDIA-PIPELINE DEBUG] PyTgCalls stream call encountered exception: %s", str(inner_e))
-                    if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str:
+                    if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str or "group_call" in err_str:
                         logger.info("Voice Chat: Initial stream join failed (%s). Retrying after peer sync...", str(inner_e))
                         await asyncio.sleep(0.5)
                         try:
@@ -561,8 +585,18 @@ class VoiceChatAssistant:
                             logger.warning("[MEDIA-PIPELINE DEBUG] Peer sync invite link join error: %s", str(peer_retry_err))
                         
                         logger.info("[MEDIA-PIPELINE DEBUG] Retrying PyTgCalls playback call...")
-                        await _do_stream()
-                        logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully on retry!")
+                        try:
+                            await _do_stream()
+                            logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully on retry!")
+                        except Exception as retry_err:
+                            retry_err_str = str(retry_err).lower()
+                            if "channel_invalid" in retry_err_str or "peer" in retry_err_str or "400" in retry_err_str or "group_call" in retry_err_str:
+                                raise RuntimeError(
+                                    "ASSISTANT_NOT_IN_GROUP / CHANNEL_INVALID: Telegram returned CHANNEL_INVALID. "
+                                    "The assistant userbot must be added to the group and promoted to administrator with "
+                                    "'Manage Video Chats' permission, and the group Voice Chat must be started manually first!"
+                                )
+                            raise retry_err
                     else:
                         raise inner_e
 

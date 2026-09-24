@@ -397,6 +397,136 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
         )
         return
 
+    # Check if JioSaavn URL is supplied
+    if "jiosaavn.com" in args_text.lower():
+        status_msg = await bot_api_client.send_message(
+            chat_id, f"🔎 {to_small_caps('resolving jiosaavn link')}..."
+        )
+        status_msg_id = status_msg.get("result", {}).get("message_id")
+        
+        from player.providers.jiosaavn import jiosaavn_provider
+        resolved_tracks = []
+        try:
+            resolved_tracks = await asyncio.get_running_loop().run_in_executor(
+                None, jiosaavn_provider.resolve_url, args_text.strip(), user_id, username
+            )
+        except Exception as e:
+            logger.warning("JioSaavn URL resolution error: %s", str(e))
+
+        if status_msg_id:
+            try:
+                await bot_api_client.delete_message(chat_id, status_msg_id)
+            except Exception:
+                pass
+
+        if not resolved_tracks:
+            await bot_api_client.send_message(
+                chat_id, f"❌ {to_small_caps('failed to resolve jiosaavn url')}."
+            )
+            return
+
+        # Play / queue tracks
+        first_track = resolved_tracks[0]
+        
+        # Verify and auto-invite assistant
+        if chat_id < 0 and voice_assistant.is_configured:
+            is_member = False
+            if voice_assistant.is_connected and voice_assistant.assistant_id:
+                try:
+                    member_resp = await bot_api_client.get_chat_member(chat_id, voice_assistant.assistant_id)
+                    if member_resp.get("ok"):
+                        status = member_resp.get("result", {}).get("status", "")
+                        if status in ("member", "administrator", "creator"):
+                            is_member = True
+                except Exception:
+                    pass
+            if not is_member:
+                invite_res = await bot_api_client.export_chat_invite_link(chat_id)
+                invite_link = invite_res.get("result")
+                joined = False
+                if invite_link:
+                    joined = await voice_assistant.join_chat(invite_link)
+                if not joined:
+                    asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Assistant"
+                    await bot_api_client.send_message(
+                        chat_id,
+                        f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
+                        f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
+                        f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
+                        f"1. Add {asst_tag} directly to this group as a member.\n"
+                        f"2. Start Video Chat / Voice Chat in the group.\n\n"
+                        f"Then send /play again to stream live! 🎵",
+                    )
+                    return
+
+        # Download status feedback for first track if playing is not active
+        state = await player_manager.get_state(chat_id)
+        queue = await player_manager.get_queue(chat_id)
+        status_id = None
+        if not state.is_playing:
+            status = await bot_api_client.send_message(
+                chat_id, f"⬇️ {to_small_caps('downloading & buffering')}: {first_track.title}..."
+            )
+            status_id = status.get("result", {}).get("message_id")
+
+        # Play the first track
+        is_now_playing, state, queue = await player_manager.play_or_queue(
+            chat_id, first_track, {"id": user_id, "name": username}
+        )
+
+        if status_id:
+            try:
+                await bot_api_client.delete_message(chat_id, status_id)
+            except Exception:
+                pass
+
+        # Queue any other resolved tracks
+        for other_track in resolved_tracks[1:]:
+            await queue.add(other_track)
+
+        if voice_assistant.last_error and not state.is_playing and not is_now_playing:
+            err_text = voice_assistant.last_error
+            asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
+            if "channel_invalid" in err_text.lower() or "peer" in err_text.lower() or "group_call" in err_text.lower():
+                await bot_api_client.send_message(
+                    chat_id,
+                    f"⚠️ {to_bold_sans('PEER RESOLUTION FAILURE / CHANNEL_INVALID')}\n\n"
+                    f"• {to_small_caps('reason')}: Telegram returned CHANNEL_INVALID.\n"
+                    f"• {to_small_caps('solution')}: The assistant userbot {asst_tag} must be promoted to administrator in this group with 'Manage Video Chats' permission, and the group voice chat must be active!\n"
+                    f"Please make sure the group voice chat is running manually before launching playback."
+                )
+            else:
+                await bot_api_client.send_message(
+                    chat_id,
+                    f"❌ {to_bold_sans('PLAYBACK/EXTRACTION ERROR')}\n\n"
+                    f"• {to_small_caps('song')}: {first_track.title}\n"
+                    f"• {to_small_caps('reason')}: {err_text}"
+                )
+            return
+
+        if len(resolved_tracks) > 1:
+            await bot_api_client.send_message(
+                chat_id,
+                f"✅ {to_bold_sans('JIOSAAVN ALBUM/PLAYLIST LOADED')}\n\n"
+                f"🎵 {to_small_caps('playing')}: {first_track.title}\n"
+                f"➕ {to_small_caps('queued')}: {len(resolved_tracks) - 1} more songs from link!"
+            )
+        else:
+            if is_now_playing and state.current_track:
+                rich_player = build_player_rich_message(state, queue)
+                send_res = await bot_api_client.send_rich_message(chat_id, rich_player)
+                msg_id = send_res.get("result", {}).get("message_id")
+                state.player_message_id = msg_id
+                state.player_message_chat_id = chat_id
+                await db.add_history(chat_id, first_track.track_id, first_track.title, first_track.artist, first_track.duration, first_track.source_url, username)
+            elif not is_now_playing and len(queue) > 0:
+                await bot_api_client.send_message(
+                    chat_id,
+                    f"➕ {to_small_caps('added to queue')}: {first_track.title}\n"
+                    f"📍 {to_small_caps('position')}: #{len(queue)}",
+                )
+        return
+
     # Check if user typed a numerical selection index from search results (e.g. /play 1)
     clean_arg = args_text.strip()
     if clean_arg.isdigit():
