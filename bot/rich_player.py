@@ -55,7 +55,15 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
             "style": "primary",
             "callback_data": f"player:pause:{session}",
         }
-        status_badge = "▶ " + to_small_caps("playing")
+        pb_status = getattr(state, "playback_status", "playing")
+        if pb_status == "searching":
+            status_badge = "🔎 " + to_small_caps("searching")
+        elif pb_status == "preparing":
+            status_badge = "⬇️ " + to_small_caps("preparing audio")
+        elif pb_status == "starting":
+            status_badge = "🎧 " + to_small_caps("starting playback")
+        else:
+            status_badge = "▶ " + to_small_caps("playing")
 
     # Row 1: Prev | Pause/Resume | Skip
     row_1_buttons = [

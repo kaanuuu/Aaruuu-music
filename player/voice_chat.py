@@ -321,6 +321,70 @@ def sanitize_and_prepare_session(session_str: str, api_id: int = 6) -> str:
     return cleaned
 
 
+async def verify_media_file_with_ffmpeg(path_or_url: str) -> tuple[bool, str]:
+    """
+    Verifies if FFmpeg can successfully decode the media file or stream.
+    Runs a fast test: ffmpeg -ss 00:00:00 -t 1 -i <file/URL> -f null -
+    Returns (success, log_or_error_message).
+    """
+    import asyncio
+    import os
+    import shutil
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return False, "FFmpeg binary is not found on the system path."
+
+    is_http = path_or_url.startswith(("http://", "https://"))
+    if not is_http:
+        if not os.path.exists(path_or_url):
+            return False, f"Local file does not exist: {path_or_url}"
+        if os.path.getsize(path_or_url) == 0:
+            return False, f"Local file is empty: {path_or_url}"
+
+    try:
+        # Build command. For HTTP streams, we can add User-Agent & Referer headers to match playback
+        cmd = ["ffmpeg", "-y"]
+        if is_http:
+            # Match the headers and reconnect parameters used in PyTgCalls
+            cmd.extend([
+                "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://www.jiosaavn.com/\r\n",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5"
+            ])
+        
+        cmd.extend([
+            "-ss", "00:00:00",
+            "-t", "1",
+            "-i", path_or_url,
+            "-f", "null",
+            "-"
+        ])
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            stderr_decoded = stderr.decode(errors="ignore")
+            if proc.returncode == 0:
+                return True, "FFmpeg successfully validated the audio stream/file decoding."
+            else:
+                err_lines = stderr_decoded.splitlines()[-10:]
+                return False, f"FFmpeg validation failed (code {proc.returncode}). Errors:\n" + "\n".join(err_lines)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return False, "FFmpeg validation timed out after 5 seconds."
+    except Exception as e:
+        return False, f"Error spawning FFmpeg verification: {str(e)}"
+
+
 class VoiceChatAssistant:
     """Manages Telegram Group Voice Chat (VC) audio streaming via PyTgCalls / Pyrogram."""
 
@@ -526,10 +590,25 @@ class VoiceChatAssistant:
                     except Exception as inv_err:
                         logger.debug("Voice Chat: Invite link peer resolution note: %s", str(inv_err))
 
-                logger.info(
-                    "Voice Chat: PyTgCalls joining VC call in chat %s with audio source...",
-                    chat_id,
-                )
+                # Pipeline Diagnostics & Logs
+                is_http = playable_stream.startswith(("http://", "https://"))
+                import shutil
+                ffmpeg_found = shutil.which("ffmpeg") or "Not found"
+
+                logger.info("[MEDIA-PIPELINE DEBUG] 1. Extracted audio URL/source: %s", playable_stream)
+                logger.info("[MEDIA-PIPELINE DEBUG] 2. Source type: %s", "remote" if is_http else "local")
+                logger.info("[MEDIA-PIPELINE DEBUG] 3. Downloaded file path: %s", playable_stream if not is_http else "N/A")
+                logger.info("[MEDIA-PIPELINE DEBUG] 4. File existence: %s", os.path.exists(playable_stream) if not is_http else "N/A")
+                logger.info("[MEDIA-PIPELINE DEBUG] 5. File size: %s bytes", os.path.getsize(playable_stream) if not is_http and os.path.exists(playable_stream) else "N/A")
+                logger.info("[MEDIA-PIPELINE DEBUG] 6. FFmpeg availability: %s", ffmpeg_found)
+
+                # Run FFmpeg decode ability test
+                logger.info("[MEDIA-PIPELINE DEBUG] 7. Testing FFmpeg ability to decode the file...")
+                success, ffmpeg_log = await verify_media_file_with_ffmpeg(playable_stream)
+                logger.info("[MEDIA-PIPELINE DEBUG] FFmpeg verification result: %s - %s", "SUCCESS" if success else "FAILED", ffmpeg_log)
+
+                if not success:
+                    raise RuntimeError(f"FFmpeg decoding test failed: {ffmpeg_log}")
 
                 # Construct stream with FFmpeg headers & reconnect flags so HTTP audio CDNs (JioSaavn / YouTube) don't send 403 or silence
                 ffmpeg_params = (
@@ -539,13 +618,23 @@ class VoiceChatAssistant:
                 )
                 
                 def _build_stream(target_url: str):
+                    is_remote = target_url.startswith(("http://", "https://"))
+                    # If local, we must NOT pass http specific parameters like headers or reconnect
+                    params = ffmpeg_params if is_remote else ""
+                    
                     if MediaStream:
                         try:
                             from pytgcalls.types import AudioQuality
-                            return MediaStream(target_url, audio_parameters=AudioQuality.HIGH, ffmpeg_parameters=ffmpeg_params)
+                            if params:
+                                return MediaStream(target_url, audio_parameters=AudioQuality.HIGH, ffmpeg_parameters=params)
+                            else:
+                                return MediaStream(target_url, audio_parameters=AudioQuality.HIGH)
                         except Exception:
                             try:
-                                return MediaStream(target_url, ffmpeg_parameters=ffmpeg_params)
+                                if params:
+                                    return MediaStream(target_url, ffmpeg_parameters=params)
+                                else:
+                                    return MediaStream(target_url)
                             except Exception:
                                 try:
                                     return MediaStream(target_url)
@@ -553,10 +642,16 @@ class VoiceChatAssistant:
                                     pass
                     if AudioPiped:
                         try:
-                            return AudioPiped(target_url, additional_ffmpeg_parameters=ffmpeg_params)
+                            if params:
+                                return AudioPiped(target_url, additional_ffmpeg_parameters=params)
+                            else:
+                                return AudioPiped(target_url)
                         except Exception:
                             try:
-                                return AudioPiped(target_url, ffmpeg_parameters=ffmpeg_params)
+                                if params:
+                                    return AudioPiped(target_url, ffmpeg_parameters=params)
+                                else:
+                                    return AudioPiped(target_url)
                             except Exception:
                                 try:
                                     return AudioPiped(target_url)
@@ -564,37 +659,50 @@ class VoiceChatAssistant:
                                     pass
                     return target_url
 
+                logger.info("[MEDIA-PIPELINE DEBUG] 8. Creating PyTgCalls media stream object...")
                 stream_obj = _build_stream(playable_stream)
+                logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object: %s", str(stream_obj))
 
                 async def _do_stream():
                     # PyTgCalls v1 API (join_group_call)
                     if hasattr(self.pytgcalls, "join_group_call"):
+                        logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls join_group_call() for chat %s", chat_id)
                         if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
                             try:
+                                logger.info("[MEDIA-PIPELINE DEBUG] Attempting to change stream...")
                                 await self.pytgcalls.change_stream(chat_id, stream_obj)
-                            except Exception:
+                            except Exception as change_err:
+                                logger.info("[MEDIA-PIPELINE DEBUG] change_stream failed (%s), falling back to join_group_call", str(change_err))
                                 await self.pytgcalls.join_group_call(chat_id, stream_obj)
                         else:
                             await self.pytgcalls.join_group_call(chat_id, stream_obj)
 
                     # PyTgCalls v2 API (play)
                     elif hasattr(self.pytgcalls, "play"):
+                        logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls play() for chat %s", chat_id)
                         if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
                             try:
+                                logger.info("[MEDIA-PIPELINE DEBUG] Attempting to change stream...")
                                 await self.pytgcalls.change_stream(chat_id, stream_obj)
-                            except Exception:
+                            except Exception as change_err:
+                                logger.info("[MEDIA-PIPELINE DEBUG] change_stream failed (%s), falling back to play", str(change_err))
                                 await self.pytgcalls.play(chat_id, stream_obj)
                         else:
                             await self.pytgcalls.play(chat_id, stream_obj)
 
                     elif hasattr(self.pytgcalls, "join_call"):
+                        logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls join_call() for chat %s", chat_id)
                         await self.pytgcalls.join_call(chat_id, stream_obj)
+                    else:
+                        raise AttributeError("PyTgCalls instance has no join_group_call, play, or join_call method.")
 
                 try:
                     await _do_stream()
+                    logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully!")
                 except Exception as inner_e:
                     # If CHANNEL_INVALID or peer missing on first try, attempt 1 retry after forcing peer resolution
                     err_str = str(inner_e).lower()
+                    logger.warning("[MEDIA-PIPELINE DEBUG] PyTgCalls stream call encountered exception: %s", str(inner_e))
                     if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str:
                         logger.info("Voice Chat: Initial stream join failed (%s). Retrying after peer sync...", str(inner_e))
                         await asyncio.sleep(0.5)
@@ -604,9 +712,12 @@ class VoiceChatAssistant:
                             inv_link = inv_res.get("result") if inv_res.get("ok") else None
                             if inv_link:
                                 await self.app.join_chat(inv_link)
-                        except Exception:
-                            pass
+                        except Exception as peer_retry_err:
+                            logger.warning("[MEDIA-PIPELINE DEBUG] Peer sync invite link join error: %s", str(peer_retry_err))
+                        
+                        logger.info("[MEDIA-PIPELINE DEBUG] Retrying PyTgCalls playback call...")
                         await _do_stream()
+                        logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully on retry!")
                     else:
                         raise inner_e
 

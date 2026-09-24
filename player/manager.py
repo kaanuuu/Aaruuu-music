@@ -4,6 +4,7 @@ Coordinates per-chat player states, queues, concurrency locks, and playback life
 """
 
 import asyncio
+import time
 from typing import Dict, Optional, Tuple
 from player.models import PlayerState, Track
 from player.queue import TrackQueue
@@ -27,6 +28,20 @@ class PlayerManager:
             await extractor.download_track(track)
         except Exception as e:
             logger.warning("Could not download track inline in player manager: %s", str(e))
+
+    async def _update_playback_ui(self, chat_id: int) -> None:
+        try:
+            state = self._states.get(chat_id)
+            queue = self._queues.get(chat_id)
+            if state and queue and state.player_message_id:
+                from bot.api import bot_api_client
+                from bot.rich_player import build_player_rich_message
+                rich_player = build_player_rich_message(state, queue)
+                await bot_api_client.edit_message_rich_text(
+                    chat_id, state.player_message_id, rich_player
+                )
+        except Exception as e:
+            logger.debug("PlayerManager: Failed to update playback UI: %s", str(e))
 
     async def _get_lock(self, chat_id: int) -> asyncio.Lock:
         async with self._global_lock:
@@ -67,13 +82,40 @@ class PlayerManager:
             queue = self._queues[chat_id]
 
             if not state.is_playing:
-                state.play(track, requester)
+                # Prepare playback track properties
+                if state.current_track:
+                    state.history.append(state.current_track)
+                    if len(state.history) > 20:
+                        state.history.pop(0)
+                state.current_track = track
+                state.requested_by = requester
+                state.is_paused = False
+                state.new_session()
+                
+                # 1. Preparing audio status
+                state.playback_status = "preparing"
+                await self._update_playback_ui(chat_id)
                 await self._download_track(track)
+                
+                # 2. Starting playback status
+                state.playback_status = "starting"
+                await self._update_playback_ui(chat_id)
+                
+                # 3. Stream to VC
                 stream_ok = await voice_assistant.play_audio(chat_id, track.playable_source)
                 if not stream_ok:
                     state.stop()
+                    await self._update_playback_ui(chat_id)
                     logger.info("Chat %s: Streaming failed for '%s' (last_error='%s')", chat_id, track.title, voice_assistant.last_error)
                     return False, state, queue
+                
+                # 4. Success! Mark status as playing
+                state.is_playing = True
+                state.playback_status = "playing"
+                state.started_at = time.time()
+                state.paused_at = None
+                state.pause_duration_offset = 0.0
+                await self._update_playback_ui(chat_id)
                 logger.info("Chat %s: Now playing '%s'", chat_id, track.title)
                 return True, state, queue
             else:
@@ -117,10 +159,25 @@ class PlayerManager:
             state = self._states.get(chat_id)
             if not state or state.session_id != session_id:
                 return False, "This player is no longer active."
-            state.replay()
             if state.current_track:
+                # 1. Preparing audio status
+                state.playback_status = "preparing"
+                await self._update_playback_ui(chat_id)
                 await self._download_track(state.current_track)
-                await voice_assistant.play_audio(chat_id, state.current_track.playable_source)
+                
+                # 2. Starting playback status
+                state.playback_status = "starting"
+                await self._update_playback_ui(chat_id)
+                
+                # 3. Stream to VC
+                stream_ok = await voice_assistant.play_audio(chat_id, state.current_track.playable_source)
+                if stream_ok:
+                    state.replay()
+                    state.playback_status = "playing"
+                    await self._update_playback_ui(chat_id)
+                else:
+                    state.stop()
+                    await self._update_playback_ui(chat_id)
             return True, "Replaying current track."
 
     async def previous(
@@ -136,14 +193,35 @@ class PlayerManager:
 
             prev_track = state.pop_previous_track()
             if prev_track:
-                state.play(
-                    prev_track,
-                    {"id": prev_track.requester_user_id, "name": prev_track.requester_name},
-                    push_history=False,
-                )
+                # Prepare playback track properties
+                state.current_track = prev_track
+                state.requested_by = {"id": prev_track.requester_user_id, "name": prev_track.requester_name}
+                state.is_paused = False
+                state.new_session()
+                
+                # 1. Preparing audio status
+                state.playback_status = "preparing"
+                await self._update_playback_ui(chat_id)
                 await self._download_track(prev_track)
-                await voice_assistant.play_audio(chat_id, prev_track.playable_source)
-                return prev_track, f"Playing previous track: {prev_track.title}"
+                
+                # 2. Starting playback status
+                state.playback_status = "starting"
+                await self._update_playback_ui(chat_id)
+                
+                # 3. Stream to VC
+                stream_ok = await voice_assistant.play_audio(chat_id, prev_track.playable_source)
+                if stream_ok:
+                    state.is_playing = True
+                    state.playback_status = "playing"
+                    state.started_at = time.time()
+                    state.paused_at = None
+                    state.pause_duration_offset = 0.0
+                    await self._update_playback_ui(chat_id)
+                    return prev_track, f"Playing previous track: {prev_track.title}"
+                else:
+                    state.stop()
+                    await self._update_playback_ui(chat_id)
+                    return None, f"Failed to play previous track: {prev_track.title}"
             return None, "No previous track in playback history."
 
     async def auto_advance(self, chat_id: int) -> Tuple[Optional[Track], str]:
@@ -159,19 +237,57 @@ class PlayerManager:
 
             # Loop mode handling
             if old_track and state.loop_mode == "track":
-                state.play(old_track, state.requested_by)
+                state.playback_status = "preparing"
+                await self._update_playback_ui(chat_id)
                 await self._download_track(old_track)
-                await voice_assistant.play_audio(chat_id, old_track.playable_source)
-                return old_track, f"Looping track: {old_track.title}"
+                
+                state.playback_status = "starting"
+                await self._update_playback_ui(chat_id)
+                
+                stream_ok = await voice_assistant.play_audio(chat_id, old_track.playable_source)
+                if stream_ok:
+                    state.is_playing = True
+                    state.playback_status = "playing"
+                    state.started_at = time.time()
+                    state.paused_at = None
+                    state.pause_duration_offset = 0.0
+                    await self._update_playback_ui(chat_id)
+                    return old_track, f"Looping track: {old_track.title}"
+                else:
+                    state.stop()
+                    await self._update_playback_ui(chat_id)
+                    return None, f"Failed to loop track: {old_track.title}"
             elif old_track and state.loop_mode == "queue":
                 queue.add(old_track)
 
             next_track = queue.pop()
             if next_track:
-                state.play(next_track, {"id": next_track.requester_user_id, "name": next_track.requester_name})
+                # Prepare playback track properties
+                state.current_track = next_track
+                state.requested_by = {"id": next_track.requester_user_id, "name": next_track.requester_name}
+                state.is_paused = False
+                state.new_session()
+                
+                state.playback_status = "preparing"
+                await self._update_playback_ui(chat_id)
                 await self._download_track(next_track)
-                await voice_assistant.play_audio(chat_id, next_track.playable_source)
-                return next_track, f"Now playing: {next_track.title}"
+                
+                state.playback_status = "starting"
+                await self._update_playback_ui(chat_id)
+                
+                stream_ok = await voice_assistant.play_audio(chat_id, next_track.playable_source)
+                if stream_ok:
+                    state.is_playing = True
+                    state.playback_status = "playing"
+                    state.started_at = time.time()
+                    state.paused_at = None
+                    state.pause_duration_offset = 0.0
+                    await self._update_playback_ui(chat_id)
+                    return next_track, f"Now playing: {next_track.title}"
+                else:
+                    state.stop()
+                    await self._update_playback_ui(chat_id)
+                    return None, f"Failed to play next track: {next_track.title}"
 
             # Queue empty -> Check Autoplay
             if state.autoplay and old_track:
@@ -180,13 +296,36 @@ class PlayerManager:
                 loop = asyncio.get_running_loop()
                 auto_track = await loop.run_in_executor(None, extractor.extract_related_track, old_track)
                 if auto_track:
-                    state.play(auto_track, {"id": 0, "name": "Autoplay 📻"})
+                    # Prepare autoplay track properties
+                    state.current_track = auto_track
+                    state.requested_by = {"id": 0, "name": "Autoplay 📻"}
+                    state.is_paused = False
+                    state.new_session()
+                    
+                    state.playback_status = "preparing"
+                    await self._update_playback_ui(chat_id)
                     await self._download_track(auto_track)
-                    await voice_assistant.play_audio(chat_id, auto_track.playable_source)
-                    return auto_track, f"Autoplay: {auto_track.title}"
+                    
+                    state.playback_status = "starting"
+                    await self._update_playback_ui(chat_id)
+                    
+                    stream_ok = await voice_assistant.play_audio(chat_id, auto_track.playable_source)
+                    if stream_ok:
+                        state.is_playing = True
+                        state.playback_status = "playing"
+                        state.started_at = time.time()
+                        state.paused_at = None
+                        state.pause_duration_offset = 0.0
+                        await self._update_playback_ui(chat_id)
+                        return auto_track, f"Autoplay: {auto_track.title}"
+                    else:
+                        state.stop()
+                        await self._update_playback_ui(chat_id)
+                        return None, f"Failed to play autoplay: {auto_track.title}"
 
             state.stop()
             await voice_assistant.stop_audio(chat_id)
+            await self._update_playback_ui(chat_id)
             return None, "Queue is empty. Playback ended."
 
     async def toggle_loop_mode(
@@ -266,22 +405,61 @@ class PlayerManager:
 
             # Handle loop mode
             if old_track and state.loop_mode == "track":
-                state.play(old_track, state.requested_by)
+                state.playback_status = "preparing"
+                await self._update_playback_ui(chat_id)
                 await self._download_track(old_track)
-                await voice_assistant.play_audio(chat_id, old_track.playable_source)
-                return old_track, f"Looping track: {old_track.title}"
+                
+                state.playback_status = "starting"
+                await self._update_playback_ui(chat_id)
+                
+                stream_ok = await voice_assistant.play_audio(chat_id, old_track.playable_source)
+                if stream_ok:
+                    state.is_playing = True
+                    state.playback_status = "playing"
+                    state.started_at = time.time()
+                    state.paused_at = None
+                    state.pause_duration_offset = 0.0
+                    await self._update_playback_ui(chat_id)
+                    return old_track, f"Looping track: {old_track.title}"
+                else:
+                    state.stop()
+                    await self._update_playback_ui(chat_id)
+                    return None, f"Failed to loop track: {old_track.title}"
             elif old_track and state.loop_mode == "queue":
                 queue.add(old_track)
 
             next_track = queue.pop()
             if next_track:
-                state.play(next_track, {"user_id": next_track.requester_user_id, "name": next_track.requester_name})
+                # Prepare skip playback track properties
+                state.current_track = next_track
+                state.requested_by = {"id": next_track.requester_user_id, "name": next_track.requester_name}
+                state.is_paused = False
+                state.new_session()
+                
+                state.playback_status = "preparing"
+                await self._update_playback_ui(chat_id)
                 await self._download_track(next_track)
-                await voice_assistant.play_audio(chat_id, next_track.playable_source)
-                return next_track, f"Skipped to: {next_track.title}"
+                
+                state.playback_status = "starting"
+                await self._update_playback_ui(chat_id)
+                
+                stream_ok = await voice_assistant.play_audio(chat_id, next_track.playable_source)
+                if stream_ok:
+                    state.is_playing = True
+                    state.playback_status = "playing"
+                    state.started_at = time.time()
+                    state.paused_at = None
+                    state.pause_duration_offset = 0.0
+                    await self._update_playback_ui(chat_id)
+                    return next_track, f"Skipped to: {next_track.title}"
+                else:
+                    state.stop()
+                    await self._update_playback_ui(chat_id)
+                    return None, f"Failed to skip to: {next_track.title}"
             else:
                 state.stop()
                 await voice_assistant.stop_audio(chat_id)
+                await self._update_playback_ui(chat_id)
                 return None, "Queue is empty. Playback ended."
 
     async def shuffle(self, chat_id: int) -> Tuple[int, str]:

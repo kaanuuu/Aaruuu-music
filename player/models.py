@@ -75,6 +75,7 @@ class PlayerState:
         self.loop_mode: str = "off"  # "off", "track", "queue"
         self.autoplay: bool = True  # Autoplay enabled by default when queue ends
         self.volume: int = 100
+        self.playback_status: str = "stopped"
 
     @staticmethod
     def _generate_session_id() -> str:
