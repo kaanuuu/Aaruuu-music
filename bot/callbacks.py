@@ -22,7 +22,7 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
     """Processes incoming Telegram callback queries with fast responses and secure validation."""
     cq = update.get("callback_query", {})
     cq_id = cq.get("id")
-    data = cq.get("data", "")
+    data = str(cq.get("data") or "")
     message = cq.get("message", {})
     chat = message.get("chat", {})
     chat_id = chat.get("id")

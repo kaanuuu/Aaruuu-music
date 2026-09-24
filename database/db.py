@@ -15,7 +15,7 @@ class Database:
     """Manages SQLite storage for chats, persistent settings, and playback history."""
 
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or os.getenv("DATABASE_URL", "aaruu_music.db")
+        self.db_path = str(db_path or os.getenv("DATABASE_URL", "aaruu_music.db"))
         # If DATABASE_URL starts with sqlite:///, strip it
         if self.db_path.startswith("sqlite:///"):
             self.db_path = self.db_path.replace("sqlite:///", "", 1)

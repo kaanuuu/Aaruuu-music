@@ -46,9 +46,9 @@ class Track:
 
     @property
     def playable_source(self) -> Optional[str]:
-        """Returns local file path if downloaded and exists, else stream_url if valid. Never returns a watch webpage URL."""
+        """Returns local file path if downloaded and exists, else stream_url if valid, else source_url as fallback."""
         import os
-        if hasattr(self, "local_filepath") and self.local_filepath and os.path.exists(self.local_filepath):
+        if hasattr(self, "local_filepath") and self.local_filepath and isinstance(self.local_filepath, str) and os.path.exists(self.local_filepath):
             try:
                 if os.path.getsize(self.local_filepath) > 0:
                     return self.local_filepath
@@ -56,11 +56,18 @@ class Track:
                 pass
         
         # Ensure stream_url is a direct media stream URL and not a watch webpage URL
-        if self.stream_url and ("youtube.com/watch" not in self.stream_url and "youtu.be/" not in self.stream_url):
+        if self.stream_url and isinstance(self.stream_url, str) and ("youtube.com/watch" not in self.stream_url and "youtu.be/" not in self.stream_url):
             return self.stream_url
 
-        if self.source_url and ("youtube.com/watch" not in self.source_url and "youtu.be/" not in self.source_url):
+        if self.source_url and isinstance(self.source_url, str) and ("youtube.com/watch" not in self.source_url and "youtu.be/" not in self.source_url):
             return self.source_url
+
+        # Fallback to source_url if it is a valid HTTP/HTTPS URL
+        if self.source_url and isinstance(self.source_url, str) and self.source_url.startswith(("http://", "https://")):
+            return self.source_url
+
+        if self.stream_url and isinstance(self.stream_url, str) and self.stream_url.startswith(("http://", "https://")):
+            return self.stream_url
 
         return None
 

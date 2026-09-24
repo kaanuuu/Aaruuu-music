@@ -198,8 +198,16 @@ class PlayerManager:
                 await self._update_playback_ui(chat_id)
                 
                 # 3. Stream to VC
+                source_to_play = track.playable_source
+                if not source_to_play or not isinstance(source_to_play, str):
+                    logger.warning("Chat %s: No playable audio source or downloaded file for '%s'", chat_id, track.title)
+                    voice_assistant.last_error = f"Unable to download or stream track '{track.title}'."
+                    state.stop()
+                    await self._update_playback_ui(chat_id)
+                    return False, state, queue
+
                 stream_ok = await voice_assistant.play_audio(
-                    chat_id, track.playable_source, is_video=getattr(track, "is_video", False)
+                    chat_id, source_to_play, is_video=getattr(track, "is_video", False)
                 )
                 if not stream_ok:
                     state.stop()
@@ -269,9 +277,15 @@ class PlayerManager:
                 await self._update_playback_ui(chat_id)
                 
                 # 3. Stream to VC
-                stream_ok = await voice_assistant.play_audio(
-                    chat_id, state.current_track.playable_source, is_video=getattr(state.current_track, "is_video", False)
-                )
+                source_to_play = state.current_track.playable_source
+                if source_to_play and isinstance(source_to_play, str):
+                    stream_ok = await voice_assistant.play_audio(
+                        chat_id, source_to_play, is_video=getattr(state.current_track, "is_video", False)
+                    )
+                else:
+                    stream_ok = False
+                    voice_assistant.last_error = f"Unable to replay '{state.current_track.title}' (no playable stream)."
+
                 if stream_ok:
                     state.replay()
                     state.playback_status = "playing"
@@ -310,9 +324,15 @@ class PlayerManager:
                 await self._update_playback_ui(chat_id)
                 
                 # 3. Stream to VC
-                stream_ok = await voice_assistant.play_audio(
-                    chat_id, prev_track.playable_source, is_video=getattr(prev_track, "is_video", False)
-                )
+                source_to_play = prev_track.playable_source
+                if source_to_play and isinstance(source_to_play, str):
+                    stream_ok = await voice_assistant.play_audio(
+                        chat_id, source_to_play, is_video=getattr(prev_track, "is_video", False)
+                    )
+                else:
+                    stream_ok = False
+                    voice_assistant.last_error = f"Unable to play '{prev_track.title}' (no playable stream)."
+
                 if stream_ok:
                     state.is_playing = True
                     state.playback_status = "playing"
@@ -367,11 +387,12 @@ class PlayerManager:
             if old_track and state.loop_mode == "track":
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
-                download_success = await self._download_track(old_track)
-                if download_success:
+                await self._download_track(old_track)
+                loop_source = old_track.playable_source
+                if loop_source and isinstance(loop_source, str):
                     state.playback_status = "starting"
                     await self._update_playback_ui(chat_id)
-                    stream_ok = await voice_assistant.play_audio(chat_id, old_track.playable_source)
+                    stream_ok = await voice_assistant.play_audio(chat_id, loop_source)
                     if stream_ok:
                         state.is_playing = True
                         state.playback_status = "playing"
@@ -406,9 +427,10 @@ class PlayerManager:
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
                 
-                download_success = await self._download_track(next_track)
-                if not download_success:
-                    logger.warning("[PLAYER] Track failed extraction: '%s'. trying next.", next_track.title)
+                await self._download_track(next_track)
+                next_source = next_track.playable_source
+                if not next_source or not isinstance(next_source, str):
+                    logger.warning("[PLAYER] Track failed extraction/download: '%s'. trying next.", next_track.title)
                     try:
                         from bot.api import bot_api_client
                         from utils.formatting import to_small_caps
@@ -423,7 +445,7 @@ class PlayerManager:
                 await self._update_playback_ui(chat_id)
 
                 stream_ok = await voice_assistant.play_audio(
-                    chat_id, next_track.playable_source, is_video=getattr(next_track, "is_video", False)
+                    chat_id, next_source, is_video=getattr(next_track, "is_video", False)
                 )
                 if stream_ok:
                     state.is_playing = True
@@ -461,12 +483,13 @@ class PlayerManager:
                     
                     state.playback_status = "preparing"
                     await self._update_playback_ui(chat_id)
-                    download_success = await self._download_track(auto_track)
-                    if download_success:
+                    await self._download_track(auto_track)
+                    auto_source = auto_track.playable_source
+                    if auto_source and isinstance(auto_source, str):
                         state.playback_status = "starting"
                         await self._update_playback_ui(chat_id)
                         stream_ok = await voice_assistant.play_audio(
-                            chat_id, auto_track.playable_source, is_video=getattr(auto_track, "is_video", False)
+                            chat_id, auto_source, is_video=getattr(auto_track, "is_video", False)
                         )
                         if stream_ok:
                             state.is_playing = True
@@ -556,12 +579,17 @@ class PlayerManager:
             await self._update_playback_ui(chat_id)
 
             # 3. Stream with seek offset
-            stream_ok = await voice_assistant.play_audio(
-                chat_id, 
-                state.current_track.playable_source, 
-                seek_seconds=float(seconds),
-                is_video=getattr(state.current_track, "is_video", False)
-            )
+            source_to_play = state.current_track.playable_source
+            if source_to_play and isinstance(source_to_play, str):
+                stream_ok = await voice_assistant.play_audio(
+                    chat_id, 
+                    source_to_play, 
+                    seek_seconds=float(seconds),
+                    is_video=getattr(state.current_track, "is_video", False)
+                )
+            else:
+                stream_ok = False
+                voice_assistant.last_error = f"Cannot seek '{state.current_track.title}' (no playable stream)."
 
             if stream_ok:
                 state.is_playing = True

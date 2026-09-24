@@ -696,7 +696,7 @@ class MediaExtractor:
                         if not entry:
                             continue
                         stream_url = entry.get("url")
-                        if not stream_url or not stream_url.startswith("http"):
+                        if not stream_url or not isinstance(stream_url, str) or not stream_url.startswith(("http://", "https://")):
                             continue
                         tracks.append(
                             Track(

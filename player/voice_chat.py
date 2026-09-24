@@ -177,6 +177,9 @@ async def verify_media_file_with_ffmpeg(path_or_url: str) -> tuple[bool, str]:
     if not ffmpeg_path:
         return False, "FFmpeg binary is not found on the system path."
 
+    if not path_or_url or not isinstance(path_or_url, str):
+        return False, "Invalid or missing media path/URL."
+
     is_http = path_or_url.startswith(("http://", "https://"))
     if not is_http:
         if not os.path.exists(path_or_url):
@@ -454,6 +457,12 @@ class VoiceChatAssistant:
 
     async def play_audio(self, chat_id: int, audio_source: str, seek_seconds: float = 0.0, is_video: bool = False) -> bool:
         """Streams audio_source or video into the group voice chat call."""
+        if not audio_source or not isinstance(audio_source, str):
+            err_msg = "No playable audio source or downloaded file available for streaming."
+            self.last_error = err_msg
+            logger.warning("Voice Chat: Cannot play audio in chat %s: %s", chat_id, err_msg)
+            return False
+
         if self.pytgcalls and self.is_connected:
             try:
                 # Playable stream URL
@@ -536,6 +545,8 @@ class VoiceChatAssistant:
                     ffmpeg_params += f"-ss {seek_seconds}"
                 
                 def _build_stream(target_url: str):
+                    if not target_url or not isinstance(target_url, str):
+                        return None
                     is_remote = target_url.startswith(("http://", "https://"))
                     # If local, we must NOT pass http specific parameters like headers or reconnect unless seeking is active
                     if is_remote:
@@ -725,6 +736,14 @@ class VoiceChatAssistant:
             del self.active_chats[chat_id]
             return True
         return False
+
+    async def leave_chat(self, chat_id: int) -> bool:
+        """Alias for stopping audio and leaving group voice chat."""
+        return await self.stop_audio(chat_id)
+
+    async def leave_call(self, chat_id: int) -> bool:
+        """Alias for stopping audio and leaving group voice chat."""
+        return await self.stop_audio(chat_id)
 
     async def run_vc_diagnostic(self, chat_id: int) -> dict:
         """

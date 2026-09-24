@@ -27,10 +27,10 @@ def sanitize_text(text: str | None, max_length: int = 128) -> str:
 
 def sanitize_url(url: str | None) -> str | None:
     """Validates that a URL is a legitimate HTTP/HTTPS URL."""
-    if not url:
+    if not url or not isinstance(url, str):
         return None
     url = url.strip()
-    if url.startswith("http://") or url.startswith("https://"):
+    if url.startswith(("http://", "https://")):
         # Remove any unsafe characters
         if re.match(r"^https?://[^\s\"'<>]+$", url):
             return url

@@ -43,7 +43,7 @@ async def process_update(update: Dict[str, Any]) -> None:
                     cmd.db.register_chat(chat_id, title, chat_info.get("type", ""))
                 )
 
-            text = message.get("text", "")
+            text = str(message.get("text") or "")
             if not text.startswith("/"):
                 return
 

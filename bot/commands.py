@@ -202,7 +202,7 @@ async def handle_search_select(
 
     fake_msg = {"chat": {"id": chat_id}, "from": {"id": user_id, "first_name": username}, "message_id": 0}
     from utils.formatting import get_user_mention
-    uname = username if (username and not str(username).startswith("User")) else None
+    uname = username if (isinstance(username, str) and not username.startswith("User")) else None
     requester_label = get_user_mention(user_id, username or "User", uname)
     await _finish_playback_flow(fake_msg, track, None, user_id, username or "User", uname, requester_label, requester_label, is_video=False)
 

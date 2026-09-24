@@ -131,7 +131,7 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
     ]
 
     # Clean no-image player: skip photo block if thumbnail is not a valid URL
-    if track.thumbnail and track.thumbnail.startswith("http"):
+    if isinstance(track.thumbnail, str) and track.thumbnail.startswith(("http://", "https://")):
         blocks.append({
             "type": "photo",
             "photo": {
@@ -256,7 +256,7 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue, is_closed: b
         },
     ]
 
-    if thumbnail and thumbnail.startswith("http"):
+    if isinstance(thumbnail, str) and thumbnail.startswith(("http://", "https://")):
         blocks.append({
             "type": "photo",
             "photo": {
@@ -346,7 +346,7 @@ def build_search_rich_ui(
     ]
 
     first_thumb = tracks[0].thumbnail if tracks and tracks[0].thumbnail else None
-    if first_thumb and first_thumb.startswith("http"):
+    if isinstance(first_thumb, str) and first_thumb.startswith(("http://", "https://")):
         blocks.append({
             "type": "photo",
             "photo": {
