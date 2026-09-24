@@ -4,7 +4,7 @@ Constructs sleek, high-fidelity media player layouts using aesthetic Unicode typ
 (sans-serif bold, small caps) without raw HTML tags to avoid punchmarks.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from player.models import PlayerState, Track
 from player.queue import TrackQueue
 from utils.escaping import escape_html
@@ -84,9 +84,13 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
     ]
 
     # Row 2: [ « Skip ]
+    skip_text = "« Skip"
+    if hasattr(state, "skip_votes") and len(state.skip_votes) > 0:
+        skip_text = f"« Skip ({len(state.skip_votes)}/3)"
+
     row_2_buttons = [
         {
-            "text": "« Skip",
+            "text": skip_text,
             "style": "primary",
             "callback_data": f"player:skip:{session}",
         },
@@ -163,10 +167,11 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
 build_player_rich_message = build_player_rich_ui
 
 
-def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str, Any]:
+def build_queue_rich_message(state: PlayerState, queue: TrackQueue, is_closed: bool = False) -> Dict[str, Any]:
     """
     Constructs the rich message for the chat queue using Rich UI Button Blocks.
     Clean aesthetic typography, no raw HTML tags except timeline.
+    Guarantees all buttons persist even when closed.
     """
     session = state.session_id
     queued_tracks = queue.to_list()
@@ -192,12 +197,18 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
     else:
         up_next_lines.append(to_small_caps("no upcoming tracks in queue. use /play to add songs!"))
 
-    queue_body = (
-        f"{to_bold_sans('CURRENT PLAYLIST')}\n\n"
-        f"▶ {to_small_caps('now playing')}:\n{now_playing_text}\n\n"
-        f"📋 {to_small_caps('up next')} ({count} {to_small_caps('upcoming')}):\n"
-        + "\n".join(up_next_lines)
-    )
+    if is_closed:
+        queue_body = (
+            f"✖ {to_bold_sans('QUEUE CLOSED')}\n\n"
+            f"{to_small_caps('queue closed. tap player or refresh below to view tracks.')}"
+        )
+    else:
+        queue_body = (
+            f"{to_bold_sans('CURRENT PLAYLIST')}\n\n"
+            f"▶ {to_small_caps('now playing')}:\n{now_playing_text}\n\n"
+            f"📋 {to_small_caps('up next')} ({count} {to_small_caps('upcoming')}):\n"
+            + "\n".join(up_next_lines)
+        )
 
     thumbnail = (
         state.current_track.thumbnail
@@ -223,15 +234,17 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
         },
     ]
 
+    close_text = "✔ Closed" if is_closed else "Close"
+    close_cb = f"player:queue:{session}" if is_closed else f"player:close:{session}"
     action_buttons_row2 = [
         {
             "text": "Support",
             "url": SUPPORT_URL,
         },
         {
-            "text": "Close",
+            "text": close_text,
             "style": "link",
-            "callback_data": f"player:close:{session}",
+            "callback_data": close_cb,
         },
     ]
 
@@ -284,10 +297,13 @@ def build_search_rich_ui(
     tracks: List[Track],
     page: int = 0,
     per_page: int = 5,
+    selected_idx: Optional[int] = None,
+    is_closed: bool = False,
 ) -> Dict[str, Any]:
     """
     Constructs search results using Telegram Rich UI Button Blocks.
-    Displays selectable track blocks, pagination when needed, and a clean cancel button.
+    Displays selectable track blocks, persistent pagination, and a cancel button.
+    Guarantees every button remains visible after click.
     """
     total_tracks = len(tracks)
     total_pages = max(1, (total_tracks + per_page - 1) // per_page)
@@ -297,17 +313,26 @@ def build_search_rich_ui(
     text_lines = [f"🔎 {to_bold_sans('SEARCH RESULTS FOR')}: \"{query[:40]}\""]
     if total_pages > 1:
         text_lines.append(f"📄 {to_small_caps('page')} {page + 1}/{total_pages}")
+    if is_closed:
+        text_lines.append(f"❌ {to_small_caps('search session closed. tap a track to stream.')}")
     text_lines.append("")
 
     buttons_list: List[Dict[str, Any]] = []
     for i, tr in enumerate(page_tracks, start=page * per_page + 1):
         dur_str = format_time(tr.duration) if tr.duration else "Live"
         text_lines.append(f"{i}. {to_bold_sans(tr.title[:45])}\n   👤 {tr.artist[:35]} | ⏱ {dur_str}\n")
-        btn_label = f"{i}. {tr.title[:28]} — {tr.artist[:16]}"
+        idx_zero_based = i - 1
+        if selected_idx is not None and idx_zero_based == selected_idx:
+            btn_label = f"▶ Selected: {tr.title[:24]}"
+            btn_style = "success"
+        else:
+            btn_label = f"{i}. {tr.title[:28]} — {tr.artist[:16]}"
+            btn_style = "primary"
+
         buttons_list.append({
             "text": btn_label,
-            "style": "primary",
-            "callback_data": f"search_select:{i-1}",
+            "style": btn_style,
+            "callback_data": f"search_select:{idx_zero_based}",
         })
 
     text_lines.append(f"👇 {to_small_caps('tap a track button below to stream in voice chat')}:")
@@ -343,34 +368,34 @@ def build_search_rich_ui(
             "align": "center",
         })
 
-    # Pagination buttons if more than one page
+    # Pagination buttons if more than one page - always keep both visible so neither disappears
     if total_pages > 1:
-        nav_buttons: List[Dict[str, Any]] = []
-        if page > 0:
-            nav_buttons.append({
-                "text": "« Previous",
-                "style": "primary",
-                "callback_data": f"search_page:{page - 1}",
-            })
-        if page < total_pages - 1:
-            nav_buttons.append({
-                "text": "Next »",
-                "style": "primary",
-                "callback_data": f"search_page:{page + 1}",
-            })
-        if nav_buttons:
-            blocks.append({
-                "type": "buttons",
-                "buttons": nav_buttons,
-                "align": "center",
-            })
+        prev_target = max(0, page - 1)
+        next_target = min(total_pages - 1, page + 1)
+        blocks.append({
+            "type": "buttons",
+            "buttons": [
+                {
+                    "text": "« Previous",
+                    "style": "primary",
+                    "callback_data": f"search_page:{prev_target}",
+                },
+                {
+                    "text": "Next »",
+                    "style": "primary",
+                    "callback_data": f"search_page:{next_target}",
+                },
+            ],
+            "align": "center",
+        })
 
     # Cancel button block
+    cancel_text = "❌ Cancelled" if is_closed else "❌ Cancel"
     blocks.append({
         "type": "buttons",
         "buttons": [
             {
-                "text": "❌ Cancel",
+                "text": cancel_text,
                 "style": "danger",
                 "callback_data": "search_select:close",
             }
@@ -389,9 +414,12 @@ def build_cancel_rich_ui(
     request_id: str,
     requester_id: int,
     status_text: str = "Processing request...",
+    button_text: str = "❌ Cancel",
+    button_style: str = "danger",
 ) -> Dict[str, Any]:
     """
     Constructs an interactive pending request message using Rich UI Button Blocks with a Cancel button.
+    Guarantees the cancel button remains visible and updates state when cancelled.
     """
     return {
         "type": "rich_message",
@@ -409,8 +437,8 @@ def build_cancel_rich_ui(
                 "type": "buttons",
                 "buttons": [
                     {
-                        "text": "❌ Cancel",
-                        "style": "danger",
+                        "text": button_text,
+                        "style": button_style,
                         "callback_data": f"request:cancel:{request_id}:{requester_id}",
                     }
                 ],

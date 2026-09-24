@@ -68,9 +68,16 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
             # Record cancellation in the centralized player manager
             player_manager.cancelled_requests.add(req_id_str)
             await bot_api_client.answer_callback_query(cq_id, "❌ Request cancelled.")
-            await bot_api_client.edit_message_text(
-                chat_id, message_id, "❌ " + to_small_caps("request was cancelled by the user.")
+            from bot.rich_player import build_cancel_rich_ui
+            cancel_rich = build_cancel_rich_ui(
+                "REQUEST CANCELLED",
+                req_id_str,
+                requester_id,
+                status_text="❌ " + to_small_caps("request was cancelled by the user."),
+                button_text="❌ Cancelled",
+                button_style="danger",
             )
+            await bot_api_client.edit_message_rich_text(chat_id, message_id, cancel_rich)
         return
 
     # Check for Search callbacks: search_select:<index>
@@ -104,7 +111,8 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         section = data.split(":", 1)[1]
         if section == "close":
             await bot_api_client.answer_callback_query(cq_id, "Guide closed.")
-            await bot_api_client.delete_message(chat_id, message_id)
+            rich_help = build_start_rich_message("close", is_owner=is_sudo(user_id))
+            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_help)
             return
 
         user_is_owner = is_sudo(user_id)
@@ -129,7 +137,10 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
 
     if action == "close":
         await bot_api_client.answer_callback_query(cq_id, "Closed.")
-        await bot_api_client.delete_message(chat_id, message_id)
+        state = await player_manager.get_state(chat_id)
+        queue = await player_manager.get_queue(chat_id)
+        queue_msg = build_queue_rich_message(state, queue, is_closed=True)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, queue_msg)
         return
 
     state = await player_manager.get_state(chat_id)
@@ -170,10 +181,9 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
             # Direct Skip authorized!
             next_track, msg = await player_manager.skip(chat_id, session_id)
             await bot_api_client.answer_callback_query(cq_id, msg)
-            if next_track:
-                rich_msg = build_player_rich_message(state, queue)
-                await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
-            else:
+            rich_msg = build_player_rich_ui(state, queue)
+            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+            if not next_track:
                 await bot_api_client.send_message(
                     chat_id, "⏹ " + to_small_caps("playback ended. queue is empty.")
                 )
@@ -197,10 +207,9 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
                 await bot_api_client.answer_callback_query(cq_id, "⏭ Vote threshold reached! Skipping...")
                 await bot_api_client.send_message(chat_id, f"⏭️ {to_bold_sans('VOTE SKIP SUCCESSFUL')}! Skipping to next track...")
                 next_track, msg = await player_manager.skip(chat_id, session_id)
-                if next_track:
-                    rich_msg = build_player_rich_message(state, queue)
-                    await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
-                else:
+                rich_msg = build_player_rich_ui(state, queue)
+                await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+                if not next_track:
                     await bot_api_client.send_message(
                         chat_id, "⏹ " + to_small_caps("playback ended. queue is empty.")
                     )

@@ -112,10 +112,16 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             f"• /sysinfo - Server CPU, RAM, and Disk metrics\n"
             f"• /restart - Gracefully reload worker process"
         )
+        guides["closed"] = (
+            f"✖ {to_bold_sans('GUIDE CLOSED')}\n\n"
+            f"{to_small_caps('guide closed. tap any category below to reopen guides anytime.')}"
+        )
 
-    text = guides.get(guide_section, guides["home"])
+    is_closed = (guide_section in ("close", "closed"))
+    active_section = "closed" if is_closed else guide_section
+    text = guides.get(active_section, guides["home"])
 
-    if guide_section == "home":
+    if active_section in ("home", "closed"):
         row_0 = [
             {"text": "📜 " + to_small_caps("all user commands"), "style": "primary", "callback_data": "help:all_commands"},
         ]
@@ -137,9 +143,11 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
         if is_owner:
             row_4.append({"text": "👑 " + to_small_caps("owner & sudo"), "style": "primary", "callback_data": "help:owner_sudo"})
 
+        close_btn_text = "✔ " + to_small_caps("closed") if is_closed else "✖ " + to_small_caps("close")
+        close_btn_cb = "help:home" if is_closed else "help:close"
         row_5 = [
             {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
-            {"text": "✖ " + to_small_caps("close"), "style": "link", "callback_data": "help:close"},
+            {"text": close_btn_text, "style": "link", "callback_data": close_btn_cb},
         ]
         button_rows = [row_0, row_1, row_2, row_3, row_4, row_5]
     else:

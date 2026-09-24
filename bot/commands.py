@@ -176,9 +176,13 @@ async def handle_search_select(
         return
 
     val = parts[1]
+    tracks = SEARCH_CACHE.get(chat_id, [])
+    from bot.rich_player import build_search_rich_ui
+
     if val == "close":
         await bot_api_client.answer_callback_query(cq_id, "Search closed.")
-        await bot_api_client.delete_message(chat_id, message_id)
+        search_rich = build_search_rich_ui("Music", tracks, is_closed=True)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, search_rich)
         return
 
     try:
@@ -187,14 +191,14 @@ async def handle_search_select(
         await bot_api_client.answer_callback_query(cq_id)
         return
 
-    tracks = SEARCH_CACHE.get(chat_id, [])
     if not tracks or idx >= len(tracks):
         await bot_api_client.answer_callback_query(cq_id, "Search results expired. Try /search again.", show_alert=True)
         return
 
     track = tracks[idx]
     await bot_api_client.answer_callback_query(cq_id, f"Playing '{track.title}'...")
-    await bot_api_client.delete_message(chat_id, message_id)
+    search_rich = build_search_rich_ui("Music", tracks, selected_idx=idx)
+    await bot_api_client.edit_message_rich_text(chat_id, message_id, search_rich)
 
     fake_msg = {"chat": {"id": chat_id}, "from": {"id": user_id, "first_name": username}, "message_id": 0}
     from utils.formatting import get_user_mention
