@@ -6,7 +6,7 @@ Restricts and hides owner-only commands from regular users.
 """
 
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union, Tuple
 from bot.api import bot_api_client
 from bot.permissions import is_chat_admin, is_owner, is_sudo, can_skip_or_stop
 from bot.rich_help import build_start_rich_message
