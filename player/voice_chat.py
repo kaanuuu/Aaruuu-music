@@ -343,6 +343,22 @@ class VoiceChatAssistant:
                         except Exception as se_err:
                             logger.debug("Voice Chat stream end handler note: %s", str(se_err))
 
+                if hasattr(self.pytgcalls, "on_update"):
+                    @self.pytgcalls.on_update()
+                    async def _stream_update_handler(client, update):
+                        try:
+                            up_type = type(update).__name__
+                            if any(k in up_type for k in ("StreamEnded", "StreamAudioEnded", "StreamVideoEnded", "CallEnded")):
+                                chat_id = getattr(update, "chat_id", None)
+                                if not chat_id and hasattr(update, "call"):
+                                    chat_id = getattr(update.call, "chat_id", None)
+                                if chat_id:
+                                    logger.info("Voice Chat: %s in chat %s. Auto-advancing...", up_type, chat_id)
+                                    from player.manager import player_manager
+                                    await player_manager.auto_advance(chat_id)
+                        except Exception:
+                            pass
+
                 await self.pytgcalls.start()
                 logger.info("Voice Chat: PyTgCalls VC assistant connected successfully!")
             except Exception as vc_err:
@@ -436,8 +452,8 @@ class VoiceChatAssistant:
         # 3. Fallback to our internal active_chats tracker
         return chat_id in self.active_chats
 
-    async def play_audio(self, chat_id: int, audio_source: str, seek_seconds: float = 0.0) -> bool:
-        """Streams audio_source (URL or file) into the group voice chat call."""
+    async def play_audio(self, chat_id: int, audio_source: str, seek_seconds: float = 0.0, is_video: bool = False) -> bool:
+        """Streams audio_source or video into the group voice chat call."""
         if self.pytgcalls and self.is_connected:
             try:
                 # Playable stream URL
@@ -530,10 +546,21 @@ class VoiceChatAssistant:
                     if MediaStream:
                         try:
                             from pytgcalls.types import AudioQuality
+                            v_params = None
+                            if is_video:
+                                try:
+                                    from pytgcalls.types import VideoQuality
+                                    v_params = getattr(VideoQuality, "HD_720p", None)
+                                except Exception:
+                                    pass
+
+                            kw = {"audio_parameters": AudioQuality.HIGH}
+                            if v_params is not None:
+                                kw["video_parameters"] = v_params
                             if params:
-                                return MediaStream(target_url, audio_parameters=AudioQuality.HIGH, ffmpeg_parameters=params)
-                            else:
-                                return MediaStream(target_url, audio_parameters=AudioQuality.HIGH)
+                                kw["ffmpeg_parameters"] = params
+
+                            return MediaStream(target_url, **kw)
                         except Exception:
                             try:
                                 if params:
@@ -541,10 +568,16 @@ class VoiceChatAssistant:
                                 else:
                                     return MediaStream(target_url)
                             except Exception:
-                                try:
-                                    return MediaStream(target_url)
-                                except Exception:
-                                    pass
+                                pass
+                    if is_video:
+                        try:
+                            from pytgcalls.types import AudioVideoPiped
+                            if AudioVideoPiped:
+                                if params:
+                                    return AudioVideoPiped(target_url, additional_ffmpeg_parameters=params)
+                                return AudioVideoPiped(target_url)
+                        except Exception:
+                            pass
                     if AudioPiped:
                         try:
                             if params:
@@ -558,10 +591,7 @@ class VoiceChatAssistant:
                                 else:
                                     return AudioPiped(target_url)
                             except Exception:
-                                try:
-                                    return AudioPiped(target_url)
-                                except Exception:
-                                    pass
+                                pass
                     return target_url
 
                 logger.info("[MEDIA-PIPELINE DEBUG] 8. Creating PyTgCalls media stream object...")

@@ -72,8 +72,10 @@ async def process_update(update: Dict[str, Any]) -> None:
                 await cmd.handle_start(message, args)
             elif clean_cmd == "help":
                 await cmd.handle_help(message)
-            elif clean_cmd in ("play", "vplay"):
+            elif clean_cmd == "play":
                 await cmd.handle_play(message, args)
+            elif clean_cmd == "vplay":
+                await cmd.handle_vplay(message, args)
             elif clean_cmd in ("search", "song"):
                 await cmd.handle_search(message, args)
             elif clean_cmd == "pause":

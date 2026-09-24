@@ -138,16 +138,19 @@ class TelegramAPIClient:
         return await self.bot_api("setMyCommands", {"commands": commands})
 
     async def send_rich_message(
-        self, chat_id: int, rich_message: Dict[str, Any]
+        self, chat_id: int, rich_message: Dict[str, Any], reply_to_message_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Sends native Rich Message using Telegram Bot API.
         Delivers sleek photo card with pure Unicode typography and in-bubble round corner buttons.
         """
-        res = await self.bot_api("sendRichMessage", {"chat_id": chat_id, "rich_message": rich_message})
+        payload = {"chat_id": chat_id, "rich_message": rich_message}
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+        res = await self.bot_api("sendRichMessage", payload)
         if res.get("ok"):
             return res
-        return await self._fallback_send(chat_id, rich_message)
+        return await self._fallback_send(chat_id, rich_message, reply_to_message_id)
 
     async def edit_message_rich_text(
         self, chat_id: int, message_id: int, rich_message: Dict[str, Any]
@@ -197,19 +200,27 @@ class TelegramAPIClient:
         self,
         chat_id: int,
         text: str,
-        parse_mode: str = "HTML",
+        parse_mode: Optional[str] = None,
         reply_markup: Optional[Dict[str, Any]] = None,
+        reply_to_message_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Sends a standard text message."""
         payload: Dict[str, Any] = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": parse_mode,
             "disable_web_page_preview": False,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        return await self.bot_api("sendMessage", payload)
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+        res = await self.bot_api("sendMessage", payload)
+        if not res.get("ok") and parse_mode and "entity" in str(res.get("description", "")).lower():
+            payload.pop("parse_mode", None)
+            return await self.bot_api("sendMessage", payload)
+        return res
 
     async def delete_webhook(self, drop_pending_updates: bool = True) -> Dict[str, Any]:
         """Deletes any existing webhook so getUpdates polling can work."""
@@ -237,7 +248,7 @@ class TelegramAPIClient:
         from_chat_id: int,
         message_id: int,
         caption: Optional[str] = None,
-        parse_mode: str = "HTML",
+        parse_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Copies a message (including text, photo, audio) to another chat."""
         payload: Dict[str, Any] = {
@@ -247,7 +258,8 @@ class TelegramAPIClient:
         }
         if caption is not None:
             payload["caption"] = caption
-            payload["parse_mode"] = parse_mode
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
         return await self.bot_api("copyMessage", payload)
 
     async def edit_message_text(
@@ -272,6 +284,11 @@ class TelegramAPIClient:
         res = await self.bot_api("editMessageText", payload)
         if not res.get("ok") and "message is not modified" in str(res.get("description", "")).lower():
             return {"ok": True, "result": True}
+        if not res.get("ok") and parse_mode and "entity" in str(res.get("description", "")).lower():
+            payload.pop("parse_mode", None)
+            res_retry = await self.bot_api("editMessageText", payload)
+            if res_retry.get("ok") or "message is not modified" in str(res_retry.get("description", "")).lower():
+                return {"ok": True, "result": True}
         return res
 
     async def delete_message(self, chat_id: int, message_id: int) -> Dict[str, Any]:
@@ -279,7 +296,9 @@ class TelegramAPIClient:
         return await self.bot_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
     # Internal fallbacks if telegram client/version doesn't support Rich Block protocol
-    async def _fallback_send(self, chat_id: int, rich_message: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fallback_send(
+        self, chat_id: int, rich_message: Dict[str, Any], reply_to_message_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         DEFAULT_BANNER = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
         text_content, thumbnail, inline_kb = self._extract_fallback_data(rich_message)
         primary_photo = thumbnail or DEFAULT_BANNER
@@ -287,12 +306,15 @@ class TelegramAPIClient:
         # Enforce Telegram photo caption limit (max 1024 chars)
         safe_caption = text_content[:1000] if len(text_content) > 1000 else text_content
 
-        payload = {
+        payload: Dict[str, Any] = {
             "chat_id": chat_id,
             "photo": primary_photo,
             "caption": safe_caption,
             "reply_markup": inline_kb,
         }
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+
         res = await self.bot_api("sendPhoto", payload)
         if res.get("ok"):
             return res
@@ -304,7 +326,9 @@ class TelegramAPIClient:
             if res_retry.get("ok"):
                 return res_retry
 
-        return await self.send_message(chat_id, text_content, parse_mode=None, reply_markup=inline_kb)
+        return await self.send_message(
+            chat_id, text_content, reply_markup=inline_kb, reply_to_message_id=reply_to_message_id
+        )
 
     async def _fallback_edit(
         self, chat_id: int, message_id: int, rich_message: Dict[str, Any]
@@ -396,51 +420,39 @@ class TelegramAPIClient:
                     rows.append(row)
 
         full_text = "\n\n".join([t for t in texts if t.strip()]) or "Music Player"
-        inline_kb = None
+        inline_kb = {"inline_keyboard": rows} if rows else None
         return full_text, thumbnail, inline_kb
 
     async def set_command_scopes(self, public_commands: List[Dict[str, str]]) -> None:
-        """Registers Telegram Bot API command menus with scoped visibility (default, groups, admins, private)."""
+        """Registers Telegram Bot API command menus so all user commands appear in the '/' menu for all users."""
         try:
-            # 1. Default commands
+            # 1. Default commands scope (fallback for all chats and clients)
             await self.bot_api("setMyCommands", {
                 "commands": public_commands,
                 "scope": {"type": "default"},
             })
 
-            # 2. Group chats scope
-            group_cmds = [
-                c for c in public_commands
-                if c["command"] in ("play", "search", "song", "nowplaying", "queue", "vc", "ping", "help")
-            ]
+            # 2. All Group chats scope: Show ALL user commands to group members
             await self.bot_api("setMyCommands", {
-                "commands": group_cmds,
+                "commands": public_commands,
                 "scope": {"type": "all_group_chats"},
             })
 
-            # 3. Group Chat Administrators scope
-            admin_cmds = [
-                c for c in public_commands
-                if c["command"] in ("play", "pause", "resume", "replay", "skip", "stop", "clear", "loop", "seek", "volume", "shuffle", "queue", "nowplaying", "settings", "vc")
-            ]
+            # 3. All Chat Administrators scope: Show ALL user commands
             await self.bot_api("setMyCommands", {
-                "commands": admin_cmds,
+                "commands": public_commands,
                 "scope": {"type": "all_chat_administrators"},
             })
 
-            # 4. Private chats scope
-            private_cmds = [
-                c for c in public_commands
-                if c["command"] in ("start", "help", "play", "search", "song", "settings", "ping")
-            ]
+            # 4. All Private chats scope: Show ALL user commands in PM
             await self.bot_api("setMyCommands", {
-                "commands": private_cmds,
+                "commands": public_commands,
                 "scope": {"type": "all_private_chats"},
             })
 
-            logger.info("Bot API: Scoped command menus set successfully.")
+            logger.info("Bot API: All %d user commands successfully registered across all '/' menus.", len(public_commands))
         except Exception as e:
-            logger.debug("Bot API setMyCommands note: %s", str(e))
+            logger.warning("Bot API setMyCommands note: %s", str(e))
 
 
 bot_api_client = TelegramAPIClient()

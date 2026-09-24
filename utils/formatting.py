@@ -59,12 +59,15 @@ def format_queue_badge(count: int) -> str:
 
 
 def get_user_mention(user_id: int, name: str = "User", username: str | None = None) -> str:
-    """Returns a safe HTML user mention for Telegram messages."""
-    clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+    """
+    Returns a clean, normal user mention:
+    - If user has a username: @username
+    - If no username: clean normal name (no raw user IDs, no <a href> link tags)
+    """
     if username and str(username).strip():
         u = str(username).strip().lstrip("@")
-        return f"@{u}"
-    if user_id and user_id > 0:
-        return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
+        if u.lower() not in ("none", "null", "false", "", "unknown"):
+            return f"@{u}"
+    clean_name = (name or "User").strip()
     return clean_name
 

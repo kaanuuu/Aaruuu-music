@@ -130,10 +130,10 @@ class JioSaavnProvider:
                 elif isinstance(d, str) and d.startswith("http"):
                     return d
 
-        # Check raw media keys
-        for key in ("media_url", "encrypted_media_url", "stream_url", "media_path", "preview_url"):
+        # Check direct media keys (NEVER use preview_url for full tracks)
+        for key in ("media_url", "encrypted_media_url", "stream_url", "media_path"):
             val = item.get(key)
-            if val and isinstance(val, str) and val.startswith("http") and "jiosaavn.com/song/" not in val:
+            if val and isinstance(val, str) and val.startswith("http") and "jiosaavn.com/song/" not in val and "preview" not in val.lower():
                 return val
 
         return None

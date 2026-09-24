@@ -46,6 +46,31 @@ class PlayerManager:
         except Exception as e:
             logger.debug("PlayerManager: Failed to update playback UI: %s", str(e))
 
+    async def _send_new_player_message(self, chat_id: int) -> None:
+        try:
+            state = self._states.get(chat_id)
+            queue = self._queues.get(chat_id)
+            if not state or not state.current_track:
+                return
+
+            from bot.api import bot_api_client
+            from bot.rich_player import build_player_rich_message
+
+            # Delete old player message if it exists so we never leave duplicate or stale player messages
+            if state.player_message_id:
+                try:
+                    await bot_api_client.delete_message(chat_id, state.player_message_id)
+                except Exception:
+                    pass
+                state.player_message_id = None
+
+            rich_player = build_player_rich_message(state, queue)
+            send_res = await bot_api_client.send_rich_message(chat_id, rich_player)
+            state.player_message_id = send_res.get("result", {}).get("message_id")
+            state.player_message_chat_id = chat_id
+        except Exception as e:
+            logger.debug("PlayerManager: Failed to send new player message: %s", str(e))
+
     async def _send_or_edit_player_message(self, chat_id: int) -> None:
         try:
             state = self._states.get(chat_id)
@@ -173,7 +198,9 @@ class PlayerManager:
                 await self._update_playback_ui(chat_id)
                 
                 # 3. Stream to VC
-                stream_ok = await voice_assistant.play_audio(chat_id, track.playable_source)
+                stream_ok = await voice_assistant.play_audio(
+                    chat_id, track.playable_source, is_video=getattr(track, "is_video", False)
+                )
                 if not stream_ok:
                     state.stop()
                     await self._update_playback_ui(chat_id)
@@ -242,7 +269,9 @@ class PlayerManager:
                 await self._update_playback_ui(chat_id)
                 
                 # 3. Stream to VC
-                stream_ok = await voice_assistant.play_audio(chat_id, state.current_track.playable_source)
+                stream_ok = await voice_assistant.play_audio(
+                    chat_id, state.current_track.playable_source, is_video=getattr(state.current_track, "is_video", False)
+                )
                 if stream_ok:
                     state.replay()
                     state.playback_status = "playing"
@@ -281,7 +310,9 @@ class PlayerManager:
                 await self._update_playback_ui(chat_id)
                 
                 # 3. Stream to VC
-                stream_ok = await voice_assistant.play_audio(chat_id, prev_track.playable_source)
+                stream_ok = await voice_assistant.play_audio(
+                    chat_id, prev_track.playable_source, is_video=getattr(prev_track, "is_video", False)
+                )
                 if stream_ok:
                     state.is_playing = True
                     state.playback_status = "playing"
@@ -391,14 +422,16 @@ class PlayerManager:
                 state.playback_status = "starting"
                 await self._update_playback_ui(chat_id)
 
-                stream_ok = await voice_assistant.play_audio(chat_id, next_track.playable_source)
+                stream_ok = await voice_assistant.play_audio(
+                    chat_id, next_track.playable_source, is_video=getattr(next_track, "is_video", False)
+                )
                 if stream_ok:
                     state.is_playing = True
                     state.playback_status = "playing"
                     state.started_at = time.time()
                     state.paused_at = None
                     state.pause_duration_offset = 0.0
-                    await self._update_playback_ui(chat_id)
+                    await self._send_new_player_message(chat_id)
                     self._start_timeline_task(chat_id)
                     return next_track, f"Skipped to: {next_track.title}"
                 else:
@@ -432,16 +465,27 @@ class PlayerManager:
                     if download_success:
                         state.playback_status = "starting"
                         await self._update_playback_ui(chat_id)
-                        stream_ok = await voice_assistant.play_audio(chat_id, auto_track.playable_source)
+                        stream_ok = await voice_assistant.play_audio(
+                            chat_id, auto_track.playable_source, is_video=getattr(auto_track, "is_video", False)
+                        )
                         if stream_ok:
                             state.is_playing = True
                             state.playback_status = "playing"
                             state.started_at = time.time()
                             state.paused_at = None
                             state.pause_duration_offset = 0.0
-                            await self._update_playback_ui(chat_id)
+                            await self._send_new_player_message(chat_id)
                             self._start_timeline_task(chat_id)
                             return auto_track, f"Autoplay: {auto_track.title}"
+
+            # Delete old player message if any so chat is left completely clean
+            if state.player_message_id:
+                try:
+                    from bot.api import bot_api_client
+                    await bot_api_client.delete_message(chat_id, state.player_message_id)
+                except Exception:
+                    pass
+                state.player_message_id = None
 
             # Clear state, cleanup, and leave VC
             state.stop()
@@ -449,7 +493,6 @@ class PlayerManager:
                 queue.clear()
             await voice_assistant.stop_audio(chat_id)
             await voice_assistant.leave_chat(chat_id)
-            await self._update_playback_ui(chat_id)
             logger.info("[PLAYER] Queue is empty. Assistant left VC for chat %s", chat_id)
             return None, "Queue is empty. Playback ended."
 
@@ -516,7 +559,8 @@ class PlayerManager:
             stream_ok = await voice_assistant.play_audio(
                 chat_id, 
                 state.current_track.playable_source, 
-                seek_seconds=float(seconds)
+                seek_seconds=float(seconds),
+                is_video=getattr(state.current_track, "is_video", False)
             )
 
             if stream_ok:
@@ -603,6 +647,14 @@ class PlayerManager:
                         except Exception:
                             pass
                 queue.clear()
+
+            if state.player_message_id:
+                try:
+                    from bot.api import bot_api_client
+                    await bot_api_client.delete_message(chat_id, state.player_message_id)
+                except Exception:
+                    pass
+                state.player_message_id = None
 
             state.stop()
             await voice_assistant.stop_audio(chat_id)

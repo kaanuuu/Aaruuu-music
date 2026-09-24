@@ -28,14 +28,45 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             f"🚀 {to_bold_sans('GETTING STARTED')}\n\n"
             f"1. Add Aaruu Music to your group or chat in private.\n"
             f"2. Promote the bot to administrator to stream in group Voice Chats.\n"
-            f"3. Send /play <song name or link> to play music.\n"
+            f"3. Send /play <song name> or /vplay <video name> to stream live.\n"
             f"4. Manage music live with the interactive control panel."
         ),
         "find_play": (
             f"🔍 {to_bold_sans('FIND & PLAY')}\n\n"
-            f"• /play <song name> - Searches audio and streams top result\n"
-            f"• /play <link> - Plays direct audio/YouTube/JioSaavn/SoundCloud link\n"
+            f"• /play <song name> - Searches full audio and streams top result\n"
+            f"• /vplay <video name> - Streams video directly into group Voice Chat\n"
+            f"• /search <keyword> - Searches songs with interactive 1-5 selection\n"
+            f"• /song <name> - Search and play a specific song\n"
             f"• /nowplaying - Opens active player control panel"
+        ),
+        "all_commands": (
+            f"📜 {to_bold_sans('ALL USER COMMANDS')}\n\n"
+            f"🎵 {to_bold_sans('PLAYBACK')}:\n"
+            f"• /play <song> - Stream audio music in Voice Chat\n"
+            f"• /vplay <video> - Stream video directly in Voice Chat\n"
+            f"• /search <song> - Interactive 1-5 song search selection\n"
+            f"• /song <name> - Search and play specific track\n"
+            f"• /nowplaying - Interactive rich playback control card\n\n"
+            f"🎛 {to_bold_sans('CONTROLS')}:\n"
+            f"• /pause - Pause current playback\n"
+            f"• /resume - Resume paused playback\n"
+            f"• /replay - Replay current song from 0:00\n"
+            f"• /skip - Skip to next queued track\n"
+            f"• /stop - Stop playback and leave Voice Chat\n"
+            f"• /seek <seconds> - Jump to timestamp (e.g. /seek 60)\n"
+            f"• /volume <1-100> - Adjust playback volume\n\n"
+            f"📋 {to_bold_sans('QUEUE & PLAYLIST')}:\n"
+            f"• /queue - View upcoming queued tracks\n"
+            f"• /shuffle - Shuffle queued tracks randomly\n"
+            f"• /clear - Clear all upcoming tracks\n"
+            f"• /loop <off|track|queue> - Set loop repeat mode\n\n"
+            f"⚙️ {to_bold_sans('INFO & SETTINGS')}:\n"
+            f"• /vc - Check Voice Chat connection & audio status\n"
+            f"• /settings - View chat volume, loop status, and rules\n"
+            f"• /ping - Check bot response latency and uptime\n"
+            f"• /help - Interactive help guide\n"
+            f"• /start - Start guide & quick setup\n\n"
+            f"💡 All commands are also available by typing / in chat!"
         ),
         "controls": (
             f"🎛 {to_bold_sans('CONTROLS')}\n\n"
@@ -85,6 +116,9 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
     text = guides.get(guide_section, guides["home"])
 
     if guide_section == "home":
+        row_0 = [
+            {"text": "📜 " + to_small_caps("all user commands"), "style": "primary", "callback_data": "help:all_commands"},
+        ]
         row_1 = [
             {"text": "🚀 " + to_small_caps("getting started"), "style": "primary", "callback_data": "help:getting_started"},
             {"text": "🔍 " + to_small_caps("find & play"), "style": "primary", "callback_data": "help:find_play"},
@@ -107,7 +141,7 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
             {"text": "✖ " + to_small_caps("close"), "style": "link", "callback_data": "help:close"},
         ]
-        button_rows = [row_1, row_2, row_3, row_4, row_5]
+        button_rows = [row_0, row_1, row_2, row_3, row_4, row_5]
     else:
         # Inside a specific sub-guide: provide clean back navigation without dumping all old buttons
         row_back = [

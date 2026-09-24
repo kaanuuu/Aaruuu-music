@@ -15,7 +15,7 @@ from database.db import Database
 from player.extractor import MediaExtractor
 from player.manager import player_manager
 from player.voice_chat import voice_assistant
-from utils.escaping import sanitize_text
+from utils.escaping import escape_html, sanitize_text
 from utils.formatting import format_time
 from utils.logging import logger
 from utils.typography import to_bold_sans, to_small_caps
@@ -29,6 +29,7 @@ SEARCH_CACHE: Dict[int, List[Any]] = {}
 # Only public user commands registered with Telegram BotFather menu
 COMMANDS_REGISTRY: List[Dict[str, str]] = [
     {"command": "play", "description": "Play or queue a song or URL"},
+    {"command": "vplay", "description": "Stream video directly in Voice Chat"},
     {"command": "search", "description": "Search songs with 1-5 selection buttons"},
     {"command": "song", "description": "Search and play a specific song"},
     {"command": "pause", "description": "Pause current playback"},
@@ -61,10 +62,14 @@ async def handle_start(message: Dict[str, Any], args: str = "") -> None:
         group_welcome = (
             f"👋 {to_bold_sans(f'HELLO {first_name.upper()}')}!\n\n"
             f"⚡ {to_bold_sans('AARUU MUSIC')} is active & ready in this group.\n\n"
-            f"🎵 {to_bold_sans('HOW TO STREAM')}:\n"
-            f"1. Make sure group Voice Chat is started 🎧\n"
-            f"2. Send /play <song name> to stream immediately.\n\n"
-            f"Need full command help? Tap 'Help & Commands' below to open the interactive guide in PM!"
+            f"🎵 {to_bold_sans('STREAMING COMMANDS')}:\n"
+            f"• /play <song> - Stream music in Voice Chat\n"
+            f"• /vplay <video> - Stream video in Voice Chat\n"
+            f"• /search <song> - Search songs with buttons\n"
+            f"• /pause | /resume | /skip | /replay | /stop\n"
+            f"• /queue | /shuffle | /clear | /loop | /volume\n"
+            f"• /nowplaying - Interactive player controller\n\n"
+            f"💡 Type / in chat to browse all user commands in the Telegram menu!"
         )
         group_rich = {
             "type": "rich_message",
@@ -230,200 +235,242 @@ async def handle_search_select(
     await bot_api_client.answer_callback_query(cq_id, f"Playing '{track.title}'...")
     await bot_api_client.delete_message(chat_id, message_id)
 
-    fake_msg = {"chat": {"id": chat_id}, "from": {"id": user_id, "first_name": username}}
-    await _play_track_direct(fake_msg, track, user_id, username)
+    fake_msg = {"chat": {"id": chat_id}, "from": {"id": user_id, "first_name": username}, "message_id": 0}
+    from utils.formatting import get_user_mention
+    uname = username if (username and not str(username).startswith("User")) else None
+    requester_label = get_user_mention(user_id, username or "User", uname)
+    await _finish_playback_flow(fake_msg, track, None, user_id, username or "User", uname, requester_label, requester_label, is_video=False)
 
 
-async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, username: str) -> None:
+async def _execute_playback_flow(message: Dict[str, Any], query_text: str, is_video: bool = False) -> None:
+    """
+    Unified playback lifecycle:
+    1. Reply to user request with ONE request message.
+    2. Edit same message during search & preparation.
+    3. When track is ready and actually plays: DELETE request message & send NEW player message.
+    4. If queued: edit same request message to confirm queue position.
+    5. Tags requester with username or clickable mention.
+    """
     chat_id = message["chat"]["id"]
+    reply_to_id = message.get("message_id")
+    from_user = message.get("from", {})
+    user_id = from_user.get("id", 0)
+    first_name = from_user.get("first_name", "User")
+    username = from_user.get("username")
+
+    from utils.formatting import get_user_mention
+    requester_label = get_user_mention(user_id, first_name, username)
+    requester_mention = requester_label
+
+    # Check numerical selection from search results cache (e.g. /play 1)
+    clean_arg = query_text.strip()
+    if clean_arg.isdigit():
+        idx = int(clean_arg) - 1
+        cached_tracks = SEARCH_CACHE.get(chat_id, [])
+        if cached_tracks and 0 <= idx < len(cached_tracks):
+            selected_track = cached_tracks[idx]
+            selected_track.is_video = is_video
+            selected_track.media_type = "video" if is_video else "audio"
+            await _finish_playback_flow(
+                message, selected_track, None, user_id, first_name, username, requester_label, requester_mention, is_video
+            )
+            return
+
+    # Check if direct JioSaavn URL
+    if not is_video and "jiosaavn.com" in clean_arg.lower():
+        status_msg = await bot_api_client.send_message(
+            chat_id,
+            f"🔎 {to_small_caps('resolving jiosaavn url')}...",
+            parse_mode="HTML",
+            reply_to_message_id=reply_to_id,
+        )
+        status_id = status_msg.get("result", {}).get("message_id")
+        from player.providers.jiosaavn import jiosaavn_provider
+        import asyncio
+        resolved_tracks = []
+        try:
+            resolved_tracks = await asyncio.get_running_loop().run_in_executor(
+                None, jiosaavn_provider.resolve_url, clean_arg, user_id, first_name
+            )
+        except Exception as e:
+            logger.warning("JioSaavn URL resolution error: %s", str(e))
+
+        if not resolved_tracks:
+            err_text = f"❌ {to_small_caps('failed to resolve jiosaavn url')}."
+            if status_id:
+                await bot_api_client.edit_message_text(chat_id, status_id, err_text, parse_mode="HTML")
+            else:
+                await bot_api_client.send_message(chat_id, err_text, parse_mode="HTML", reply_to_message_id=reply_to_id)
+            return
+
+        first_track = resolved_tracks[0]
+        first_track.is_video = False
+        first_track.media_type = "audio"
+        await _finish_playback_flow(
+            message, first_track, status_id, user_id, first_name, username, requester_label, requester_mention, is_video=False
+        )
+
+        # Queue extra tracks if album or playlist
+        if len(resolved_tracks) > 1:
+            queue = await player_manager.get_queue(chat_id)
+            for extra_tr in resolved_tracks[1:]:
+                extra_tr.is_video = False
+                extra_tr.media_type = "audio"
+                queue.add(extra_tr)
+            await bot_api_client.send_message(
+                chat_id,
+                f"➕ {to_small_caps('queued')} {len(resolved_tracks) - 1} {to_small_caps('more tracks from jiosaavn link')}.",
+                reply_to_message_id=reply_to_id,
+            )
+        return
+
+    # 1. ONE request/status message replying to requester's command message
+    if is_video:
+        initial_text = f"🎬 {to_small_caps('searching video for')}: \"{sanitize_text(query_text, 45)}\"..."
+    else:
+        initial_text = f"🎵 {to_small_caps('searching music for')}: \"{sanitize_text(query_text, 45)}\"..."
+
+    status_msg = await bot_api_client.send_message(
+        chat_id, initial_text, reply_to_message_id=reply_to_id
+    )
+    status_id = status_msg.get("result", {}).get("message_id")
+
+    # 2. Accurate search & extraction (validates full track, rejects shorts/clips, multi-source fallback)
+    if is_video:
+        track = await extractor.extract_video(query_text, user_id, first_name)
+    else:
+        track = await extractor.extract(query_text, user_id, first_name)
+
+    if not track or not track.stream_url:
+        if is_video:
+            fail_text = (
+                f"❌ {to_small_caps('could not extract playable video for')}: \"{sanitize_text(query_text, 35)}\"\n"
+                f"💡 {to_small_caps('please try another title or keyword')}"
+            )
+        else:
+            fail_text = (
+                f"❌ {to_small_caps('could not find matching audio for')}: \"{sanitize_text(query_text, 35)}\"\n"
+                f"💡 {to_small_caps('try searching with')}: /search {sanitize_text(query_text, 25)}"
+            )
+
+        if status_id:
+            await bot_api_client.edit_message_text(chat_id, status_id, fail_text)
+        else:
+            await bot_api_client.send_message(chat_id, fail_text, reply_to_message_id=reply_to_id)
+        return
+
+    # 3. Edit SAME request message: Found -> Downloading/Preparing...
+    dur_str = format_time(track.duration) if track.duration else "Live"
+    icon = "🎬" if is_video else "🎵"
+    action_verb = "extracting & preparing video stream" if is_video else "downloading & buffering audio"
+    found_text = (
+        f"{icon} {track.title} ({dur_str})\n"
+        f"👤 {track.artist}\n"
+        f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
+        f"⬇️ {to_small_caps(action_verb)}..."
+    )
+    if status_id:
+        await bot_api_client.edit_message_text(chat_id, status_id, found_text)
+
+    await _finish_playback_flow(
+        message, track, status_id, user_id, first_name, username, requester_label, requester_mention, is_video
+    )
+
+
+async def _finish_playback_flow(
+    message: Dict[str, Any],
+    track: Any,
+    status_msg_id: Optional[int],
+    user_id: int,
+    first_name: str,
+    username: Optional[str],
+    requester_label: str,
+    requester_mention: str,
+    is_video: bool = False,
+) -> None:
+    chat_id = message["chat"]["id"]
+    reply_to_id = message.get("message_id")
     state = await player_manager.get_state(chat_id)
     queue = await player_manager.get_queue(chat_id)
 
-    # Clean up any existing player message in the chat to prevent spamming
-    if state.player_message_id:
-        try:
-            await bot_api_client.delete_message(chat_id, state.player_message_id)
-        except Exception:
-            pass
-        state.player_message_id = None
+    # Attach all requester info to track
+    track.requester_user_id = user_id
+    track.requester_name = first_name
+    track.requester_username = username
+    track.requester_mention = requester_mention
+    track.is_video = is_video
+    track.media_type = "video" if is_video else "audio"
 
     # Verify and auto-invite assistant in group chats before streaming
     if chat_id < 0 and voice_assistant.is_configured:
         if voice_assistant.is_connected and voice_assistant.assistant_id:
-            member_resp = await bot_api_client.get_chat_member(
-                chat_id, voice_assistant.assistant_id
-            )
-            is_member = False
-            if member_resp.get("ok"):
-                status = member_resp.get("result", {}).get("status", "")
-                if status in ("member", "administrator", "creator"):
-                    is_member = True
-
-            if not is_member:
-                invite_res = await bot_api_client.export_chat_invite_link(chat_id)
-                invite_link = invite_res.get("result")
-                joined = False
-                if invite_link:
-                    joined = await voice_assistant.join_chat(invite_link)
-
-                if not joined:
-                    asst_tag = (
-                        f"@{voice_assistant.assistant_username}"
-                        if voice_assistant.assistant_username
-                        else "Assistant"
-                    )
-                    await bot_api_client.send_message(
-                        chat_id,
-                        f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
-                        f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
-                        f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
-                        f"1. Add {asst_tag} directly to this group as a member.\n"
-                        f"2. Start Video Chat / Voice Chat in the group.\n\n"
-                        f"Then send /play again to stream live! 🎵",
-                    )
-                    return
-
-    # Check if player is currently inactive and send immediate cancelable downloading status card
-    status_id = None
-    import uuid
-    request_id = getattr(track, "request_id", None) or str(uuid.uuid4())[:8]
-    track.request_id = request_id
-
-    # Populate track with rich requester info if missing
-    track.requester_user_id = user_id
-    track.requester_name = username
-    track.requester_username = message.get("from", {}).get("username")
-    from utils.formatting import get_user_mention
-    track.requester_mention = get_user_mention(user_id, username, track.requester_username)
-
-    if not state.is_playing:
-        cancel_card = {
-            "type": "rich_message",
-            "blocks": [
-                {
-                    "type": "heading",
-                    "text": to_bold_sans("PREPARING PLAYBACK"),
-                    "size": 1,
-                },
-                {
-                    "type": "paragraph",
-                    "text": f"⬇️ {to_small_caps('downloading & buffering')}: {track.title}...\n"
-                            f"🙋 {to_small_caps('requested by')}: {track.requester_mention}\n\n"
-                            f"⌛ " + to_small_caps("please wait while we buffer and prepare the voice stream..."),
-                },
-                {
-                    "type": "buttons",
-                    "buttons": [
-                        {
-                            "text": "❌ " + to_small_caps("cancel"),
-                            "style": "danger",
-                            "callback_data": f"request:cancel:{request_id}:{user_id}",
-                        }
-                    ],
-                    "align": "center",
-                }
-            ]
-        }
-        status = await bot_api_client.send_rich_message(chat_id, cancel_card)
-        status_id = status.get("result", {}).get("message_id")
-
-    # If the request was cancelled while the card was being sent or created, stop immediately
-    if request_id in player_manager.cancelled_requests:
-        player_manager.cancelled_requests.remove(request_id)
-        if status_id:
             try:
-                await bot_api_client.delete_message(chat_id, status_id)
+                member_resp = await bot_api_client.get_chat_member(chat_id, voice_assistant.assistant_id)
+                is_member = False
+                if member_resp.get("ok"):
+                    status = member_resp.get("result", {}).get("status", "")
+                    if status in ("member", "administrator", "creator"):
+                        is_member = True
+
+                if not is_member:
+                    invite_res = await bot_api_client.export_chat_invite_link(chat_id)
+                    invite_link = invite_res.get("result")
+                    joined = False
+                    if invite_link:
+                        joined = await voice_assistant.join_chat(invite_link)
+
+                    if not joined:
+                        asst_tag = (
+                            f"@{voice_assistant.assistant_username}"
+                            if voice_assistant.assistant_username
+                            else "Assistant"
+                        )
+                        warn_msg = (
+                            f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
+                            f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
+                            f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
+                            f"1. Add {asst_tag} directly to this group as a member.\n"
+                            f"2. Start Video Chat / Voice Chat in the group.\n\n"
+                            f"Then send {'/vplay' if is_video else '/play'} again to stream live! 🎵"
+                        )
+                        if status_msg_id:
+                            await bot_api_client.edit_message_text(chat_id, status_msg_id, warn_msg, parse_mode="HTML")
+                        else:
+                            await bot_api_client.send_message(chat_id, warn_msg, parse_mode="HTML", reply_to_message_id=reply_to_id)
+                        return
             except Exception:
                 pass
-        return
 
+    # Play or Queue
     is_now_playing, state, queue = await player_manager.play_or_queue(
-        chat_id, track, {"id": user_id, "name": username, "username": track.requester_username, "mention": track.requester_mention}
+        chat_id,
+        track,
+        {"id": user_id, "name": first_name, "username": username, "mention": requester_mention},
     )
-
-    if status_id:
-        try:
-            await bot_api_client.delete_message(chat_id, status_id)
-        except Exception:
-            pass
-
-    # Double check if request was cancelled during download
-    if request_id in player_manager.cancelled_requests:
-        player_manager.cancelled_requests.remove(request_id)
-        # If it started playing, stop it immediately
-        if is_now_playing:
-            await player_manager.stop(chat_id)
-        return
 
     if voice_assistant.last_error and not state.is_playing and not is_now_playing:
         err_text = voice_assistant.last_error
-        asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
-
-        if "ASSISTANT NOT IN GROUP" in err_text or "not in this group" in err_text.lower():
-            await bot_api_client.send_message(
-                chat_id,
-                f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
-                f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
-                f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
-                f"1. Add {asst_tag} directly to this group as a member.\n"
-                f"2. Start Video Chat / Voice Chat in the group.\n\n"
-                f"Then send /play again to stream live! 🎵",
-            )
-            return
-
-        is_vc_inactive_error = any(
-            x in err_text.lower()
-            for x in ["group_call_not_modified", "no active group call", "group_call_invalid", "no group call", "group call is not active", "rpc_error"]
+        err_msg = (
+            f"❌ {to_bold_sans('PLAYBACK ERROR')}\n\n"
+            f"• {to_small_caps('track')}: {track.title}\n"
+            f"• {to_small_caps('reason')}: {err_text}"
         )
-
-        if is_vc_inactive_error:
-            vc_alert = {
-                "type": "rich_message",
-                "blocks": [
-                    {
-                        "type": "heading",
-                        "text": to_bold_sans("VOICE CHAT NOT ACTIVE"),
-                        "size": 1,
-                    },
-                    {
-                        "type": "photo",
-                        "photo": {
-                            "type": "photo",
-                            "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
-                        },
-                    },
-                    {
-                        "type": "paragraph",
-                        "text": (
-                            f"⚠️ {to_bold_sans('GROUP VOICE CHAT IS NOT STARTED')}\n\n"
-                            f"Assistant {asst_tag} is in this group, but the group Voice Chat is not active yet!\n\n"
-                            f"👉 {to_bold_sans('HOW TO START')}:\n"
-                            f"1. Tap the group profile / header at top.\n"
-                            f"2. Tap the 3-dots (⋮) -> tap {to_bold_sans('Start Video Chat / Voice Chat')}.\n"
-                            f"3. (Optional) Promote {asst_tag} to Admin with 'Manage Video Chats' permission.\n\n"
-                            f"Once Voice Chat is running in the group, send /play again to stream live! 🎵"
-                        ),
-                    },
-                    {
-                        "type": "buttons",
-                        "buttons": [
-                            {"text": "💬 " + to_small_caps("support"), "url": "https://t.me/wzzkaanu"},
-                        ],
-                    },
-                ],
-            }
-            await bot_api_client.send_rich_message(chat_id, vc_alert)
+        if status_msg_id:
+            await bot_api_client.edit_message_text(chat_id, status_msg_id, err_msg, parse_mode="HTML")
         else:
-            await bot_api_client.send_message(
-                chat_id,
-                f"❌ {to_bold_sans('PLAYBACK/EXTRACTION ERROR')}\n\n"
-                f"• {to_small_caps('song')}: {track.title}\n"
-                f"• {to_small_caps('reason')}: {err_text}\n\n"
-                f"👉 {to_bold_sans('tip')}: {to_small_caps('you can retry or search with another name!')}"
-            )
+            await bot_api_client.send_message(chat_id, err_msg, parse_mode="HTML", reply_to_message_id=reply_to_id)
         return
 
     if is_now_playing and state.current_track:
+        # Step 6: When playback actually starts:
+        # Delete the old request message
+        if status_msg_id:
+            try:
+                await bot_api_client.delete_message(chat_id, status_msg_id)
+            except Exception:
+                pass
+
+        # Create NEW player message for the currently playing track
         rich_player = build_player_rich_message(state, queue)
         send_res = await bot_api_client.send_rich_message(chat_id, rich_player)
         msg_id = send_res.get("result", {}).get("message_id")
@@ -436,228 +483,55 @@ async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, 
             track.artist,
             track.duration,
             track.source_url,
-            username,
+            first_name,
         )
     elif not is_now_playing and len(queue) > 0:
-        await bot_api_client.send_message(
-            chat_id,
-            f"➕ {to_small_caps('added to queue')}: {track.title}\n"
-            f"📍 {to_small_caps('position')}: #{len(queue)}",
+        # Queued: edit SAME request message
+        icon = "🎬" if is_video else "🎵"
+        dur_str = format_time(track.duration) if track.duration else "Live"
+        q_text = (
+            f"➕ {to_bold_sans('ADDED TO QUEUE')}\n\n"
+            f"{icon} {track.title} ({dur_str})\n"
+            f"👤 {track.artist}\n"
+            f"📍 {to_small_caps('position')}: #{len(queue)}\n"
+            f"🙋 {to_small_caps('requested by')}: {requester_label}"
         )
+        if status_msg_id:
+            await bot_api_client.edit_message_text(chat_id, status_msg_id, q_text)
+        else:
+            await bot_api_client.send_message(chat_id, q_text, reply_to_message_id=reply_to_id)
 
 
 async def handle_play(message: Dict[str, Any], args_text: str) -> None:
+    """Handles audio playback request: /play <song name or link>."""
     chat_id = message["chat"]["id"]
-    user = message.get("from", {})
-    user_id = user.get("id", 0)
-    username = user.get("username") or user.get("first_name") or "User"
-
+    reply_to_id = message.get("message_id")
     if not args_text.strip():
         await bot_api_client.send_message(
             chat_id,
             f"🎵 {to_bold_sans('USAGE')}: /play <song name or link>\n"
             f"💡 {to_small_caps('example')}: /play barsaat banjaare",
+            reply_to_message_id=reply_to_id,
         )
         return
 
-    # Check if JioSaavn URL is supplied
-    if "jiosaavn.com" in args_text.lower():
-        status_msg = await bot_api_client.send_message(
-            chat_id, f"🔎 {to_small_caps('resolving jiosaavn link')}..."
-        )
-        status_msg_id = status_msg.get("result", {}).get("message_id")
-        
-        from player.providers.jiosaavn import jiosaavn_provider
-        resolved_tracks = []
-        try:
-            resolved_tracks = await asyncio.get_running_loop().run_in_executor(
-                None, jiosaavn_provider.resolve_url, args_text.strip(), user_id, username
-            )
-        except Exception as e:
-            logger.warning("JioSaavn URL resolution error: %s", str(e))
+    await _execute_playback_flow(message, args_text, is_video=False)
 
-        if status_msg_id:
-            try:
-                await bot_api_client.delete_message(chat_id, status_msg_id)
-            except Exception:
-                pass
 
-        if not resolved_tracks:
-            await bot_api_client.send_message(
-                chat_id, f"❌ {to_small_caps('failed to resolve jiosaavn url')}."
-            )
-            return
-
-        # Play / queue tracks
-        first_track = resolved_tracks[0]
-        
-        # Verify and auto-invite assistant
-        if chat_id < 0 and voice_assistant.is_configured:
-            is_member = False
-            if voice_assistant.is_connected and voice_assistant.assistant_id:
-                try:
-                    member_resp = await bot_api_client.get_chat_member(chat_id, voice_assistant.assistant_id)
-                    if member_resp.get("ok"):
-                        status = member_resp.get("result", {}).get("status", "")
-                        if status in ("member", "administrator", "creator"):
-                            is_member = True
-                except Exception:
-                    pass
-            if not is_member:
-                invite_res = await bot_api_client.export_chat_invite_link(chat_id)
-                invite_link = invite_res.get("result")
-                joined = False
-                if invite_link:
-                    joined = await voice_assistant.join_chat(invite_link)
-                if not joined:
-                    asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Assistant"
-                    await bot_api_client.send_message(
-                        chat_id,
-                        f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
-                        f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
-                        f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
-                        f"1. Add {asst_tag} directly to this group as a member.\n"
-                        f"2. Start Video Chat / Voice Chat in the group.\n\n"
-                        f"Then send /play again to stream live! 🎵",
-                    )
-                    return
-
-        # Download status feedback for first track if playing is not active
-        state = await player_manager.get_state(chat_id)
-        queue = await player_manager.get_queue(chat_id)
-        status_id = None
-        if not state.is_playing:
-            status = await bot_api_client.send_message(
-                chat_id, f"⬇️ {to_small_caps('downloading & buffering')}: {first_track.title}..."
-            )
-            status_id = status.get("result", {}).get("message_id")
-
-        # Play the first track
-        is_now_playing, state, queue = await player_manager.play_or_queue(
-            chat_id, first_track, {"id": user_id, "name": username}
-        )
-
-        if status_id:
-            try:
-                await bot_api_client.delete_message(chat_id, status_id)
-            except Exception:
-                pass
-
-        # Queue any other resolved tracks
-        for other_track in resolved_tracks[1:]:
-            await queue.add(other_track)
-
-        if voice_assistant.last_error and not state.is_playing and not is_now_playing:
-            err_text = voice_assistant.last_error
-            asst_tag = f"@{voice_assistant.assistant_username}" if voice_assistant.assistant_username else "Voice Assistant"
-            if "channel_invalid" in err_text.lower() or "peer" in err_text.lower() or "group_call" in err_text.lower():
-                await bot_api_client.send_message(
-                    chat_id,
-                    f"⚠️ {to_bold_sans('PEER RESOLUTION FAILURE / CHANNEL_INVALID')}\n\n"
-                    f"• {to_small_caps('reason')}: Telegram returned CHANNEL_INVALID.\n"
-                    f"• {to_small_caps('solution')}: The assistant userbot {asst_tag} must be promoted to administrator in this group with 'Manage Video Chats' permission, and the group voice chat must be active!\n"
-                    f"Please make sure the group voice chat is running manually before launching playback."
-                )
-            else:
-                await bot_api_client.send_message(
-                    chat_id,
-                    f"❌ {to_bold_sans('PLAYBACK/EXTRACTION ERROR')}\n\n"
-                    f"• {to_small_caps('song')}: {first_track.title}\n"
-                    f"• {to_small_caps('reason')}: {err_text}"
-                )
-            return
-
-        if len(resolved_tracks) > 1:
-            await bot_api_client.send_message(
-                chat_id,
-                f"✅ {to_bold_sans('JIOSAAVN ALBUM/PLAYLIST LOADED')}\n\n"
-                f"🎵 {to_small_caps('playing')}: {first_track.title}\n"
-                f"➕ {to_small_caps('queued')}: {len(resolved_tracks) - 1} more songs from link!"
-            )
-        else:
-            if is_now_playing and state.current_track:
-                rich_player = build_player_rich_message(state, queue)
-                send_res = await bot_api_client.send_rich_message(chat_id, rich_player)
-                msg_id = send_res.get("result", {}).get("message_id")
-                state.player_message_id = msg_id
-                state.player_message_chat_id = chat_id
-                await db.add_history(chat_id, first_track.track_id, first_track.title, first_track.artist, first_track.duration, first_track.source_url, username)
-            elif not is_now_playing and len(queue) > 0:
-                await bot_api_client.send_message(
-                    chat_id,
-                    f"➕ {to_small_caps('added to queue')}: {first_track.title}\n"
-                    f"📍 {to_small_caps('position')}: #{len(queue)}",
-                )
-        return
-
-    # Check if user typed a numerical selection index from search results (e.g. /play 1)
-    clean_arg = args_text.strip()
-    if clean_arg.isdigit():
-        idx = int(clean_arg) - 1
-        cached_tracks = SEARCH_CACHE.get(chat_id, [])
-        if cached_tracks and 0 <= idx < len(cached_tracks):
-            selected_track = cached_tracks[idx]
-            await _play_track_direct(message, selected_track, user_id, username)
-            return
-
-    # Inform user of resolution with a beautiful cancelable card
-    import uuid
-    request_id = str(uuid.uuid4())[:8]
-
-    cancel_card = {
-        "type": "rich_message",
-        "blocks": [
-            {
-                "type": "heading",
-                "text": to_bold_sans("SEARCHING SONGS"),
-                "size": 1,
-            },
-            {
-                "type": "paragraph",
-                "text": f"🔎 {to_small_caps('searching & preparing')}: \"{sanitize_text(args_text, 50)}\"...\n"
-                        f"🙋 {to_small_caps('requested by')}: @{username}\n\n"
-                        f"⌛ " + to_small_caps("please wait while we search and prepare the media stream..."),
-            },
-            {
-                "type": "buttons",
-                "buttons": [
-                    {
-                        "text": "❌ " + to_small_caps("cancel"),
-                        "style": "danger",
-                        "callback_data": f"request:cancel:{request_id}:{user_id}",
-                    }
-                ],
-                "align": "center",
-            }
-        ]
-    }
-
-    status_msg = await bot_api_client.send_rich_message(chat_id, cancel_card)
-    status_msg_id = status_msg.get("result", {}).get("message_id")
-
-    track = await extractor.extract(args_text, user_id, username)
-
-    if status_msg_id:
-        try:
-            await bot_api_client.delete_message(chat_id, status_msg_id)
-        except Exception:
-            pass
-
-    # Check if request was cancelled during extraction
-    if request_id in player_manager.cancelled_requests:
-        player_manager.cancelled_requests.remove(request_id)
-        return
-
-    if not track or not track.stream_url:
+async def handle_vplay(message: Dict[str, Any], args_text: str) -> None:
+    """Handles video playback request: /vplay <video name or YouTube link>."""
+    chat_id = message["chat"]["id"]
+    reply_to_id = message.get("message_id")
+    if not args_text.strip():
         await bot_api_client.send_message(
             chat_id,
-            f"❌ {to_small_caps('could not find audio stream for:')} \"{sanitize_text(args_text, 40)}\"\n"
-            f"💡 {to_small_caps('try searching with')}: /search {sanitize_text(args_text, 30)}",
+            f"🎬 {to_bold_sans('VIDEO USAGE')}: /vplay <video name or YouTube link>\n"
+            f"💡 {to_small_caps('example')}: /vplay Alan Walker Faded",
+            reply_to_message_id=reply_to_id,
         )
         return
 
-    track.request_id = request_id
-    await _play_track_direct(message, track, user_id, username)
+    await _execute_playback_flow(message, args_text, is_video=True)
 
 
 async def handle_pause(message: Dict[str, Any]) -> None:

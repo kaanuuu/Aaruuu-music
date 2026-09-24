@@ -32,6 +32,8 @@ class Track:
     requester_mention: str = "User"
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     thumbnail_url: str = ""
+    is_video: bool = False
+    media_type: str = "audio"  # "audio" or "video"
 
     def __post_init__(self):
         if not self.requester_id:
@@ -78,6 +80,8 @@ class Track:
             "requester_mention": self.requester_mention,
             "request_id": self.request_id,
             "thumbnail_url": self.thumbnail_url,
+            "is_video": getattr(self, "is_video", False),
+            "media_type": getattr(self, "media_type", "audio"),
         }
 
 

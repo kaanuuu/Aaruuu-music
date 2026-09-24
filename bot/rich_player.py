@@ -7,6 +7,7 @@ Constructs sleek, high-fidelity media player layouts using aesthetic Unicode typ
 from typing import Any, Dict, List
 from player.models import PlayerState, Track
 from player.queue import TrackQueue
+from utils.escaping import escape_html
 from utils.formatting import format_time, get_user_mention, render_progress
 from utils.typography import to_bold_sans, to_small_caps
 
@@ -36,10 +37,11 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
     curr_pos = state.current_position
     progress_line = render_progress(curr_pos, track.duration, bar_length=12)
     
-    req_id = state.requested_by.get("id") or track.requester_user_id
-    req_name = state.requested_by.get("name") or track.requester_name or "User"
+    req_id = state.requested_by.get("id") or getattr(track, "requester_user_id", 0)
+    req_name = state.requested_by.get("name") or getattr(track, "requester_name", "User")
+    req_user = state.requested_by.get("username") or getattr(track, "requester_username", None)
     # Ensure requester mention uses username or clickable mention, never raw Telegram user ID
-    requester_label = get_user_mention(req_id, req_name, state.requested_by.get("username"))
+    requester_label = get_user_mention(req_id, req_name, req_user)
 
     # Play/Pause toggle button
     if state.is_paused:
@@ -89,20 +91,36 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
         },
     ]
 
-    # Timeline in monospace code block
-    time_str = f"<code>{progress_line}</code>"
-    caption_text = (
-        f"🎵 {to_small_caps('title')}: {track.title}\n"
-        f"👤 {to_small_caps('artist')}: {track.artist}\n"
-        f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
-        f"⚡ {to_small_caps('status')}: {status_badge}\n\n"
-        f"{time_str}"
-    )
+    # Timeline with unicode progress bar
+    time_str = progress_line
+    is_video_track = getattr(track, "is_video", False) or getattr(track, "media_type", "audio") == "video"
+
+    track_title = track.title or "Unknown Track"
+    track_artist = track.artist or "Unknown Artist"
+
+    if is_video_track:
+        heading_title = to_bold_sans("NOW PLAYING VIDEO")
+        caption_text = (
+            f"🎬 {to_small_caps('video')}: {track_title}\n"
+            f"👤 {to_small_caps('channel')}: {track_artist}\n"
+            f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
+            f"⚡ {to_small_caps('status')}: {status_badge} (🎥 {to_small_caps('video stream')})\n\n"
+            f"{time_str}"
+        )
+    else:
+        heading_title = to_bold_sans("NOW PLAYING")
+        caption_text = (
+            f"🎵 {to_small_caps('title')}: {track_title}\n"
+            f"👤 {to_small_caps('artist')}: {track_artist}\n"
+            f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
+            f"⚡ {to_small_caps('status')}: {status_badge}\n\n"
+            f"{time_str}"
+        )
 
     blocks: List[Dict[str, Any]] = [
         {
             "type": "heading",
-            "text": to_bold_sans("NOW PLAYING"),
+            "text": heading_title,
             "size": 1,
         },
     ]
@@ -156,8 +174,13 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
     up_next_lines: List[str] = []
     if queued_tracks:
         for idx, tr in enumerate(queued_tracks[:8], start=1):
+            req_tag = get_user_mention(
+                getattr(tr, "requester_user_id", 0),
+                getattr(tr, "requester_name", "User"),
+                getattr(tr, "requester_username", None),
+            )
             up_next_lines.append(
-                f"{idx}. {tr.title} ({format_time(tr.duration)}) - @{tr.requester_name}"
+                f"{idx}. {tr.title} ({format_time(tr.duration)}) - {req_tag}"
             )
         if len(queued_tracks) > 8:
             up_next_lines.append(f"... +{len(queued_tracks) - 8} " + to_small_caps("more tracks"))

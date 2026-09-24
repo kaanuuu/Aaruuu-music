@@ -129,6 +129,99 @@ class YouTubeProvider(BaseProvider):
                 logger.warning("[PROVIDER-YOUTUBE] yt-dlp extraction failed: %s", str(e))
             return None
 
+    def _get_video_ydl_opts(self) -> Dict[str, Any]:
+        opts = {
+            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "socket_timeout": 12,
+            "logger": YtDlpQuietLogger(),
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["ios", "android", "tv_embedded", "mweb"],
+                    "player_skip": ["webpage", "configs"],
+                }
+            },
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        }
+        if self.cookies_path and os.path.exists(self.cookies_path):
+            opts["cookiefile"] = self.cookies_path
+        return opts
+
+    def _extract_video_ytdlp(
+        self, target: str, is_url: bool, requester_id: int, requester_name: str
+    ) -> Optional[Track]:
+        """Extracts direct video stream URL from YouTube using yt-dlp for /vplay."""
+        try:
+            import yt_dlp
+        except ImportError:
+            logger.warning("[PROVIDER-YOUTUBE] yt_dlp is not installed!")
+            return None
+
+        search_query = target if is_url else f"ytsearch5:{target}"
+        opts = self._get_video_ydl_opts()
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(search_query, download=False)
+                if not info:
+                    return None
+
+                entries = list(info.get("entries") or [info]) if "entries" in info else [info]
+                valid_entry = None
+                for ent in entries:
+                    if not ent:
+                        continue
+                    url = ent.get("url")
+                    if not url or "youtube.com/watch" in url or "youtu.be/" in url:
+                        continue
+                    dur = int(ent.get("duration") or 0)
+                    t = ent.get("title", "").lower()
+                    # Skip shorts unless explicitly requested
+                    if dur < 60 or "#short" in t or "/shorts/" in (ent.get("webpage_url") or ""):
+                        continue
+                    valid_entry = ent
+                    break
+
+                if not valid_entry and entries:
+                    # Fallback to first non-empty entry with direct url
+                    for ent in entries:
+                        if ent and ent.get("url") and "youtube.com/watch" not in ent.get("url") and "youtu.be/" not in ent.get("url"):
+                            valid_entry = ent
+                            break
+
+                if not valid_entry:
+                    logger.warning("[PROVIDER-YOUTUBE] No valid direct video stream found for target '%s'", target)
+                    return None
+
+                stream_url = valid_entry.get("url")
+                title = sanitize_text(valid_entry.get("title") or target, 80)
+                artist = sanitize_text(valid_entry.get("artist") or valid_entry.get("uploader") or valid_entry.get("channel"), 60) or "YouTube Video"
+                duration = int(valid_entry.get("duration") or 240)
+                thumbnail = valid_entry.get("thumbnail") or DEFAULT_THUMBNAIL
+                source_url = valid_entry.get("webpage_url") or target
+
+                return Track(
+                    track_id=f"ytv_{valid_entry.get('id') or uuid.uuid4().hex[:8]}",
+                    title=title,
+                    artist=artist,
+                    duration=duration,
+                    thumbnail=thumbnail,
+                    source_url=source_url,
+                    stream_url=stream_url,
+                    requester_user_id=requester_id,
+                    requester_name=requester_name,
+                    is_video=True,
+                    media_type="video",
+                )
+        except Exception as e:
+            logger.warning("[PROVIDER-YOUTUBE] Video extraction error for %s: %s", target, str(e))
+            return None
+
     def search(
         self, query: str, limit: int = 5, requester_id: int = 0, requester_name: str = ""
     ) -> List[Track]:
@@ -192,6 +285,14 @@ class YouTubeProvider(BaseProvider):
                                     duration = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
                             except ValueError:
                                 pass
+
+                        # Skip Shorts and short snippets (<60s) unless explicitly queried
+                        is_clip_query = any(w in query.lower() for w in ["short", "shorts", "clip", "snippet", "teaser", "status", "ringtone"])
+                        if not is_clip_query:
+                            if duration < 60:
+                                continue
+                            if "#short" in title.lower() or "#shorts" in title.lower():
+                                continue
 
                         thumb = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
                         source_url = f"https://www.youtube.com/watch?v={vid_id}"
