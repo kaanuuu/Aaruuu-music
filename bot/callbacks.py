@@ -9,7 +9,7 @@ from typing import Any, Dict
 from bot.api import bot_api_client
 from bot.permissions import is_chat_admin, is_sudo, can_skip_or_stop
 from bot.rich_help import build_start_rich_message
-from bot.rich_player import build_player_rich_message, build_queue_rich_message
+from bot.rich_player import build_player_rich_ui, build_player_rich_message, build_queue_rich_message
 from database.db import Database
 from player.manager import player_manager
 from utils.typography import to_bold_sans, to_small_caps

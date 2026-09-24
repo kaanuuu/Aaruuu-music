@@ -14,13 +14,14 @@ from utils.typography import to_bold_sans, to_small_caps
 SUPPORT_URL = "https://t.me/wzzkaanu"
 
 
-def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str, Any]:
+def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any]:
     """
-    Constructs the rich player message:
+    Centralized native Rich UI builder for Aaruu Music.
+    Constructs the rich player message using Telegram Rich UI Button Blocks:
     - Pure Unicode typography
     - Full track details: title, artist, duration, user mention
     - Visual progress bar
-    - Minimal controls: Queue, Play/Pause, Replay, Skip
+    - Minimal symbol controls: [ Queue ] [ || / > ] [ ↻ ] and [ » ]
     """
     track: Track = state.current_track or Track(
         track_id="none",
@@ -43,17 +44,17 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
     # Ensure requester mention uses username or clickable mention, never raw Telegram user ID
     requester_label = get_user_mention(req_id, req_name, req_user)
 
-    # Play/Pause toggle button
+    # Play/Pause toggle button (|| for playing, > for paused)
     if state.is_paused:
         play_pause_button = {
-            "text": "▶ ʀᴇsᴜᴍᴇ",
+            "text": ">",
             "style": "success",
             "callback_data": f"player:resume:{session}",
         }
         status_badge = "⏸ " + to_small_caps("paused")
     else:
         play_pause_button = {
-            "text": "⏸ ᴘᴀᴜsᴇ",
+            "text": "||",
             "style": "primary",
             "callback_data": f"player:pause:{session}",
         }
@@ -67,25 +68,25 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
         else:
             status_badge = "▶ " + to_small_caps("playing")
 
-    # Row 1: [ Queue ] [ Pause/Resume ] [ Replay ]
+    # Row 1: [ Queue ] [ || / > ] [ ↻ ]
     row_1_buttons = [
         {
-            "text": f"☷ ǫᴜᴇᴜᴇ ({len(queue)})",
+            "text": "Queue",
             "style": "primary",
             "callback_data": f"player:queue:{session}",
         },
         play_pause_button,
         {
-            "text": "↺ ʀᴇᴘʟᴀʏ",
+            "text": "↻",
             "style": "primary",
             "callback_data": f"player:replay:{session}",
         },
     ]
 
-    # Row 2: [ Skip ]
+    # Row 2: [ » ]
     row_2_buttons = [
         {
-            "text": "⏭ sᴋɪᴘ",
+            "text": "»",
             "style": "primary",
             "callback_data": f"player:skip:{session}",
         },
@@ -158,6 +159,10 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
     }
 
 
+# Centralized alias ensuring unified Rich UI builder
+build_player_rich_message = build_player_rich_ui
+
+
 def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str, Any]:
     """
     Constructs the rich message for the chat queue using Rich UI Button Blocks.
@@ -202,17 +207,17 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
 
     action_buttons_row1 = [
         {
-            "text": "◀ ᴘʟᴀʏᴇʀ",
+            "text": "Player",
             "style": "primary",
             "callback_data": f"player:nowplaying:{session}",
         },
         {
-            "text": "🔄 ʀᴇғʀᴇsʜ",
+            "text": "↻",
             "style": "primary",
             "callback_data": f"player:queue:{session}",
         },
         {
-            "text": "↩ ᴜɴᴅᴏ",
+            "text": "Undo",
             "style": "primary",
             "callback_data": f"queue:undo:{session}",
         },
@@ -220,11 +225,11 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
 
     action_buttons_row2 = [
         {
-            "text": "💬 sᴜᴘᴘᴏʀᴛ",
+            "text": "Support",
             "url": SUPPORT_URL,
         },
         {
-            "text": "✖ ᴄʟᴏsᴇ",
+            "text": "Close",
             "style": "link",
             "callback_data": f"player:close:{session}",
         },

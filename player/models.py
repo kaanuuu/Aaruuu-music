@@ -58,7 +58,10 @@ class Track:
         # Ensure stream_url is a direct media stream URL and not a watch webpage URL
         if self.stream_url and ("youtube.com/watch" not in self.stream_url and "youtu.be/" not in self.stream_url):
             return self.stream_url
-            
+
+        if self.source_url and ("youtube.com/watch" not in self.source_url and "youtu.be/" not in self.source_url):
+            return self.source_url
+
         return None
 
     def to_dict(self) -> Dict[str, Any]:

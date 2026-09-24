@@ -156,22 +156,38 @@ class TelegramAPIClient:
         self, chat_id: int, message_id: int, rich_message: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Edits an existing native Rich Message card with updated content and round corner buttons.
-        Guarantees instant response and prevents double-taps from breaking the UI.
+        Edits an existing native Rich Message card with updated content and Rich UI Button Blocks.
+        Guarantees that Rich UI Button Blocks remain Rich UI Button Blocks.
+        Never converts to legacy inline keyboards.
         """
-        # Try native editMessageRichText if supported by Telegram endpoint
-        res = await self.bot_api(
-            "editMessageRichText",
-            {"chat_id": chat_id, "message_id": message_id, "rich_message": rich_message},
-        )
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "rich_message": rich_message,
+        }
+
+        # 1. Primary: editRichMessage (the direct update counterpart to sendRichMessage)
+        res = await self.bot_api("editRichMessage", payload)
         if res.get("ok"):
             return res
-
-        desc = str(res.get("description", "")).lower()
-        if "message is not modified" in desc:
+        if "message is not modified" in str(res.get("description", "")).lower():
             return {"ok": True, "result": True}
 
-        # Fallback to updating the media card with its embedded round-corner buttons
+        # 2. Secondary: editMessageRichText
+        res2 = await self.bot_api("editMessageRichText", payload)
+        if res2.get("ok"):
+            return res2
+        if "message is not modified" in str(res2.get("description", "")).lower():
+            return {"ok": True, "result": True}
+
+        # 3. Tertiary: editMessageRich
+        res3 = await self.bot_api("editMessageRich", payload)
+        if res3.get("ok"):
+            return res3
+        if "message is not modified" in str(res3.get("description", "")).lower():
+            return {"ok": True, "result": True}
+
+        # Fallback updating the media/caption card WITHOUT attaching legacy inline keyboards
         return await self._fallback_edit(chat_id, message_id, rich_message)
 
     async def export_chat_invite_link(self, chat_id: int) -> Dict[str, Any]:
@@ -295,12 +311,12 @@ class TelegramAPIClient:
         """Deletes a message from chat."""
         return await self.bot_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
-    # Internal fallbacks if telegram client/version doesn't support Rich Block protocol
+    # Internal fallbacks if telegram client/version requires photo/text envelope while preserving Rich UI Button Blocks
     async def _fallback_send(
         self, chat_id: int, rich_message: Dict[str, Any], reply_to_message_id: Optional[int] = None
     ) -> Dict[str, Any]:
         DEFAULT_BANNER = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
-        text_content, thumbnail, inline_kb = self._extract_fallback_data(rich_message)
+        text_content, thumbnail = self._extract_fallback_data(rich_message)
         primary_photo = thumbnail or DEFAULT_BANNER
 
         # Enforce Telegram photo caption limit (max 1024 chars)
@@ -310,7 +326,7 @@ class TelegramAPIClient:
             "chat_id": chat_id,
             "photo": primary_photo,
             "caption": safe_caption,
-            "reply_markup": inline_kb,
+            "rich_message": rich_message,
         }
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
@@ -326,24 +342,29 @@ class TelegramAPIClient:
             if res_retry.get("ok"):
                 return res_retry
 
-        return await self.send_message(
-            chat_id, text_content, reply_markup=inline_kb, reply_to_message_id=reply_to_message_id
-        )
+        payload_txt: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text_content,
+            "rich_message": rich_message,
+        }
+        if reply_to_message_id:
+            payload_txt["reply_to_message_id"] = reply_to_message_id
+        return await self.bot_api("sendMessage", payload_txt)
 
     async def _fallback_edit(
         self, chat_id: int, message_id: int, rich_message: Dict[str, Any]
     ) -> Dict[str, Any]:
-        text_content, thumbnail, inline_kb = self._extract_fallback_data(rich_message)
+        text_content, thumbnail = self._extract_fallback_data(rich_message)
         safe_caption = text_content[:1000] if len(text_content) > 1000 else text_content
         DEFAULT_BANNER = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
         primary_photo = thumbnail or DEFAULT_BANNER
 
-        # 1. Try editing photo caption & reply markup
+        # 1. Try editing photo caption with rich_message preserved; NEVER attach legacy inline keyboards
         payload_cap = {
             "chat_id": chat_id,
             "message_id": message_id,
             "caption": safe_caption,
-            "reply_markup": inline_kb,
+            "rich_message": rich_message,
         }
         res = await self.bot_api("editMessageCaption", payload_cap)
         if res.get("ok"):
@@ -352,7 +373,7 @@ class TelegramAPIClient:
         if "message is not modified" in desc:
             return {"ok": True, "result": True}
 
-        # 2. Try editing media (photo + caption + reply markup) in-place
+        # 2. Try editing media (photo + caption) in-place with rich_message preserved
         payload_media = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -361,7 +382,7 @@ class TelegramAPIClient:
                 "media": primary_photo,
                 "caption": safe_caption,
             },
-            "reply_markup": inline_kb,
+            "rich_message": rich_message,
         }
         res_media = await self.bot_api("editMessageMedia", payload_media)
         if res_media.get("ok"):
@@ -369,34 +390,22 @@ class TelegramAPIClient:
         if "message is not modified" in str(res_media.get("description", "")).lower():
             return {"ok": True, "result": True}
 
-        # 3. Try editing reply markup alone (updates buttons without touching media/caption)
-        res_markup = await self.bot_api("editMessageReplyMarkup", {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "reply_markup": inline_kb,
-        })
-        if res_markup.get("ok") or "message is not modified" in str(res_markup.get("description", "")).lower():
-            return {"ok": True, "result": True}
-
-        # 4. Try editing standard text message if sent as text
+        # 3. Try editing standard text message with rich_message preserved
         payload_txt = {
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text_content,
-            "reply_markup": inline_kb,
+            "rich_message": rich_message,
         }
         res_txt = await self.bot_api("editMessageText", payload_txt)
         if res_txt.get("ok") or "message is not modified" in str(res_txt.get("description", "")).lower():
             return {"ok": True, "result": True}
 
-        # 5. Only if message cannot be edited in-place, delete the old message FIRST synchronously to prevent duplicate keyboards
-        await self.delete_message(chat_id, message_id)
-        return await self._fallback_send(chat_id, rich_message)
+        return res_txt
 
     def _extract_fallback_data(self, rich_message: Dict[str, Any]):
         texts: List[str] = []
         thumbnail = None
-        rows: List[List[Dict[str, str]]] = []
 
         blocks = rich_message.get("blocks", [])
         for block in blocks:
@@ -408,20 +417,9 @@ class TelegramAPIClient:
             elif btype == "photo":
                 p = block.get("photo", {})
                 thumbnail = p.get("media") if isinstance(p, dict) else p
-            elif btype == "buttons":
-                row = []
-                for btn in block.get("buttons", []):
-                    btn_text = btn.get("text", "")
-                    if btn.get("url"):
-                        row.append({"text": btn_text, "url": btn["url"]})
-                    elif btn.get("callback_data"):
-                        row.append({"text": btn_text, "callback_data": btn["callback_data"]})
-                if row:
-                    rows.append(row)
 
         full_text = "\n\n".join([t for t in texts if t.strip()]) or "Music Player"
-        inline_kb = {"inline_keyboard": rows} if rows else None
-        return full_text, thumbnail, inline_kb
+        return full_text, thumbnail
 
     async def set_command_scopes(self, public_commands: List[Dict[str, str]]) -> None:
         """Registers Telegram Bot API command menus so all user commands appear in the '/' menu for all users."""

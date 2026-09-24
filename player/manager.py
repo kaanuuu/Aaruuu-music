@@ -38,8 +38,8 @@ class PlayerManager:
             queue = self._queues.get(chat_id)
             if state and queue and state.player_message_id:
                 from bot.api import bot_api_client
-                from bot.rich_player import build_player_rich_message
-                rich_player = build_player_rich_message(state, queue)
+                from bot.rich_player import build_player_rich_ui, build_player_rich_message
+                rich_player = build_player_rich_ui(state, queue)
                 await bot_api_client.edit_message_rich_text(
                     chat_id, state.player_message_id, rich_player
                 )
@@ -54,7 +54,7 @@ class PlayerManager:
                 return
 
             from bot.api import bot_api_client
-            from bot.rich_player import build_player_rich_message
+            from bot.rich_player import build_player_rich_ui, build_player_rich_message
 
             # Delete old player message if it exists so we never leave duplicate or stale player messages
             if state.player_message_id:
@@ -64,7 +64,7 @@ class PlayerManager:
                     pass
                 state.player_message_id = None
 
-            rich_player = build_player_rich_message(state, queue)
+            rich_player = build_player_rich_ui(state, queue)
             send_res = await bot_api_client.send_rich_message(chat_id, rich_player)
             state.player_message_id = send_res.get("result", {}).get("message_id")
             state.player_message_chat_id = chat_id
@@ -79,8 +79,8 @@ class PlayerManager:
                 return
 
             from bot.api import bot_api_client
-            from bot.rich_player import build_player_rich_message
-            rich_player = build_player_rich_message(state, queue)
+            from bot.rich_player import build_player_rich_ui, build_player_rich_message
+            rich_player = build_player_rich_ui(state, queue)
 
             if state.player_message_id:
                 res = await bot_api_client.edit_message_rich_text(

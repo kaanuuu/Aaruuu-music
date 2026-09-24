@@ -37,7 +37,7 @@ class TestRichMessages(unittest.TestCase):
         # 1. Heading block
         heading_block = next((b for b in blocks if b.get("type") == "heading"), None)
         self.assertIsNotNone(heading_block)
-        self.assertEqual(heading_block.get("text"), to_bold_sans("AARUU MUSIC"))
+        self.assertEqual(heading_block.get("text"), to_bold_sans("NOW PLAYING"))
 
         # 2. Photo block for album art
         photo_block = next((b for b in blocks if b.get("type") == "photo"), None)
@@ -52,28 +52,21 @@ class TestRichMessages(unittest.TestCase):
         self.assertIn("3:06", details_paragraph["text"])
         self.assertIn("●", details_paragraph["text"])
 
-        # 4. Buttons blocks
+        # 4. Buttons blocks: Row 1 [ Queue ] [ || ] [ ↻ ] and Row 2 [ » ]
         button_blocks = [b for b in blocks if b.get("type") == "buttons"]
-        self.assertEqual(len(button_blocks), 4)
+        self.assertEqual(len(button_blocks), 2)
 
-        # Row 1 buttons: Prev, Pause, Skip
+        # Row 1 buttons: Queue, ||, ↻
         row1 = button_blocks[0]["buttons"]
         self.assertEqual(len(row1), 3)
-        self.assertIn("ᴘʀᴇᴠ", row1[0]["text"])
-        self.assertIn("ᴘᴀᴜsᴇ", row1[1]["text"])
-        self.assertIn("sᴋɪᴘ", row1[2]["text"])
+        self.assertEqual(row1[0]["text"], "Queue")
+        self.assertEqual(row1[1]["text"], "||")
+        self.assertEqual(row1[2]["text"], "↻")
 
-        # Row 3 buttons: Loop, Autoplay
-        row3 = button_blocks[2]["buttons"]
-        self.assertEqual(len(row3), 2)
-        self.assertIn("ʟᴏᴏᴘ", row3[0]["text"])
-        self.assertIn("ᴀᴜᴛᴏᴘʟᴀʏ", row3[1]["text"])
-
-        # Row 4 buttons: Support and Close
-        row4 = button_blocks[3]["buttons"]
-        support_btn = row4[0]
-        self.assertEqual(support_btn["url"], "https://t.me/wzzkaanu")
-        self.assertIn("sᴜᴘᴘᴏʀᴛ", support_btn["text"])
+        # Row 2 buttons: »
+        row2 = button_blocks[1]["buttons"]
+        self.assertEqual(len(row2), 1)
+        self.assertEqual(row2[0]["text"], "»")
 
     def test_build_player_paused_toggle(self):
         self.state.play(self.track, {"name": "john_doe", "id": 12345})
@@ -82,8 +75,8 @@ class TestRichMessages(unittest.TestCase):
         button_blocks = [b for b in rich_msg["blocks"] if b.get("type") == "buttons"]
         row1 = button_blocks[0]["buttons"]
 
-        # Middle button should now be Resume with success style
-        self.assertIn("ʀᴇsᴜᴍᴇ", row1[1]["text"])
+        # Middle button should now be Resume (>) with success style
+        self.assertEqual(row1[1]["text"], ">")
         self.assertEqual(row1[1]["style"], "success")
         self.assertIn("player:resume:", row1[1]["callback_data"])
 
