@@ -91,3 +91,25 @@ async def is_chat_admin(chat_id: int, user_id: int) -> bool:
     except Exception as e:
         logger.error("Error inspecting chat member permission: %s", str(e))
         return False
+
+
+async def can_skip_or_stop(chat_id: int, user_id: int, state: Any) -> bool:
+    """
+    Verifies if a user has administrative control rights in the chat.
+    Allowed for:
+    - Current track requester
+    - Chat administrators
+    - Bot owner
+    - Sudo users
+    """
+    if is_sudo(user_id):
+        return True
+
+    # Check if this user is the current track requester
+    if state and state.current_track:
+        req_id = getattr(state.current_track, "requester_user_id", 0) or getattr(state.current_track, "requester_id", 0)
+        if user_id == req_id:
+            return True
+
+    # Check chat admin status
+    return await is_chat_admin(chat_id, user_id)

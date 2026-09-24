@@ -1,8 +1,7 @@
 """
 Aaruu Music - Native Rich Player & Queue Builder
 Constructs sleek, high-fidelity media player layouts using aesthetic Unicode typography
-(sans-serif bold, small caps) without raw HTML tags (<b>, <code>) to avoid punchmarks.
-Includes instant support redirect to @wzzkaanu.
+(sans-serif bold, small caps) without raw HTML tags to avoid punchmarks.
 """
 
 from typing import Any, Dict, List
@@ -20,12 +19,12 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
     - Pure Unicode typography
     - Full track details: title, artist, duration, user mention
     - Visual progress bar
-    - Immediate control buttons: Prev, Play/Pause, Skip, Queue, Replay, Shuffle, Loop, Autoplay, Support, Close
+    - Minimal controls: Queue, Play/Pause, Replay, Skip
     """
     track: Track = state.current_track or Track(
         track_id="none",
         title="No Track Selected",
-        artist="Aaruu Music",
+        artist="Music Player",
         duration=0,
         thumbnail="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
         source_url="https://telegram.org",
@@ -35,11 +34,12 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
 
     session = state.session_id
     curr_pos = state.current_position
-    progress_line = render_progress(curr_pos, track.duration)
+    progress_line = render_progress(curr_pos, track.duration, bar_length=12)
     
     req_id = state.requested_by.get("id") or track.requester_user_id
     req_name = state.requested_by.get("name") or track.requester_name or "User"
-    requester_label = get_user_mention(req_id, req_name)
+    # Ensure requester mention uses username or clickable mention, never raw Telegram user ID
+    requester_label = get_user_mention(req_id, req_name, state.requested_by.get("username"))
 
     # Play/Pause toggle button
     if state.is_paused:
@@ -59,20 +59,29 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
         if pb_status == "searching":
             status_badge = "🔎 " + to_small_caps("searching")
         elif pb_status == "preparing":
-            status_badge = "⬇️ " + to_small_caps("preparing audio")
+            status_badge = "⬇️ " + to_small_caps("preparing")
         elif pb_status == "starting":
-            status_badge = "🎧 " + to_small_caps("starting playback")
+            status_badge = "🎧 " + to_small_caps("starting")
         else:
             status_badge = "▶ " + to_small_caps("playing")
 
-    # Row 1: Prev | Pause/Resume | Skip
+    # Row 1: [ Queue ] [ Pause/Resume ] [ Replay ]
     row_1_buttons = [
         {
-            "text": "⏮ ᴘʀᴇᴠ",
+            "text": f"☷ ǫᴜᴇᴜᴇ ({len(queue)})",
             "style": "primary",
-            "callback_data": f"player:prev:{session}",
+            "callback_data": f"player:queue:{session}",
         },
         play_pause_button,
+        {
+            "text": "↺ ʀᴇᴘʟᴀʏ",
+            "style": "primary",
+            "callback_data": f"player:replay:{session}",
+        },
+    ]
+
+    # Row 2: [ Skip ]
+    row_2_buttons = [
         {
             "text": "⏭ sᴋɪᴘ",
             "style": "primary",
@@ -80,80 +89,35 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
         },
     ]
 
-    # Row 2: Queue count | Replay | Shuffle
-    queue_count = len(queue)
-    queue_label = f"☷ ǫᴜᴇᴜᴇ ({queue_count})"
-    row_2_buttons = [
-        {
-            "text": queue_label,
-            "style": "primary",
-            "callback_data": f"player:queue:{session}",
-        },
-        {
-            "text": "↺ ʀᴇᴘʟᴀʏ",
-            "style": "primary",
-            "callback_data": f"player:replay:{session}",
-        },
-        {
-            "text": "🔀 sʜᴜғғʟᴇ",
-            "style": "primary",
-            "callback_data": f"player:shuffle:{session}",
-        },
-    ]
-
-    # Row 3: Loop mode & Autoplay toggle
-    loop_str = state.loop_mode.upper()
-    ap_str = "ON" if state.autoplay else "OFF"
-    row_3_buttons = [
-        {
-            "text": f"🔁 ʟᴏᴏᴘ: {loop_str}",
-            "style": "primary",
-            "callback_data": f"player:loop:{session}",
-        },
-        {
-            "text": f"📻 ᴀᴜᴛᴏᴘʟᴀʏ: {ap_str}",
-            "style": "primary",
-            "callback_data": f"player:autoplay:{session}",
-        },
-    ]
-
-    # Row 4: Support (@wzzkaanu) and Close
-    row_4_buttons = [
-        {
-            "text": "💬 sᴜᴘᴘᴏʀᴛ",
-            "url": SUPPORT_URL,
-        },
-        {
-            "text": "✖ ᴄʟᴏsᴇ",
-            "style": "link",
-            "callback_data": f"player:close:{session}",
-        },
-    ]
-
-    time_str = f"{format_time(curr_pos)} / {format_time(track.duration)}"
+    # Timeline in monospace code block
+    time_str = f"<code>{progress_line}</code>"
     caption_text = (
-        f"{to_bold_sans('AARUU MUSIC PLAYER')} • {status_badge}\n\n"
         f"🎵 {to_small_caps('title')}: {track.title}\n"
         f"👤 {to_small_caps('artist')}: {track.artist}\n"
-        f"⏱ {to_small_caps('duration')}: {format_time(track.duration)}\n"
-        f"🙋 {to_small_caps('requested by')}: {requester_label}\n\n"
-        f"{progress_line}\n"
-        f"⏱ {time_str}"
+        f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
+        f"⚡ {to_small_caps('status')}: {status_badge}\n\n"
+        f"{time_str}"
     )
 
     blocks: List[Dict[str, Any]] = [
         {
             "type": "heading",
-            "text": to_bold_sans("AARUU MUSIC"),
+            "text": to_bold_sans("NOW PLAYING"),
             "size": 1,
         },
-        {
+    ]
+
+    # Clean no-image player: skip photo block if thumbnail is not a valid URL
+    if track.thumbnail and track.thumbnail.startswith("http"):
+        blocks.append({
             "type": "photo",
             "photo": {
                 "type": "photo",
                 "media": track.thumbnail,
             },
-        },
+        })
+
+    blocks.extend([
         {
             "type": "paragraph",
             "text": caption_text,
@@ -168,17 +132,7 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
             "buttons": row_2_buttons,
             "align": "center",
         },
-        {
-            "type": "buttons",
-            "buttons": row_3_buttons,
-            "align": "center",
-        },
-        {
-            "type": "buttons",
-            "buttons": row_4_buttons,
-            "align": "center",
-        },
-    ]
+    ])
 
     return {
         "blocks": blocks,
@@ -186,11 +140,10 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
     }
 
 
-
 def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str, Any]:
     """
-    Constructs the rich message for the chat queue:
-    Clean aesthetic typography, no raw HTML tags.
+    Constructs the rich message for the chat queue using Rich UI Button Blocks.
+    Clean aesthetic typography, no raw HTML tags except timeline.
     """
     session = state.session_id
     queued_tracks = queue.to_list()
@@ -212,7 +165,7 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
         up_next_lines.append(to_small_caps("no upcoming tracks in queue. use /play to add songs!"))
 
     queue_body = (
-        f"{to_bold_sans('AARUU MUSIC QUEUE')}\n\n"
+        f"{to_bold_sans('CURRENT PLAYLIST')}\n\n"
         f"▶ {to_small_caps('now playing')}:\n{now_playing_text}\n\n"
         f"📋 {to_small_caps('up next')} ({count} {to_small_caps('upcoming')}):\n"
         + "\n".join(up_next_lines)
@@ -257,16 +210,21 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
     blocks: List[Dict[str, Any]] = [
         {
             "type": "heading",
-            "text": to_bold_sans("AARUU MUSIC"),
+            "text": to_bold_sans("MUSIC QUEUE"),
             "size": 1,
         },
-        {
+    ]
+
+    if thumbnail and thumbnail.startswith("http"):
+        blocks.append({
             "type": "photo",
             "photo": {
                 "type": "photo",
                 "media": thumbnail,
             },
-        },
+        })
+
+    blocks.extend([
         {
             "type": "paragraph",
             "text": queue_body,
@@ -281,7 +239,7 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
             "buttons": action_buttons_row2,
             "align": "center",
         },
-    ]
+    ])
 
     return {
         "blocks": blocks,

@@ -25,6 +25,23 @@ class Track:
     local_filepath: Optional[str] = None
     created_at: float = field(default_factory=time.time)
 
+    # Required attributes from requester system
+    source: str = "youtube"
+    requester_id: int = 0
+    requester_username: Optional[str] = None
+    requester_mention: str = "User"
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
+    thumbnail_url: str = ""
+
+    def __post_init__(self):
+        if not self.requester_id:
+            self.requester_id = self.requester_user_id
+        if not self.thumbnail_url:
+            self.thumbnail_url = self.thumbnail
+        if not self.requester_mention or self.requester_mention == "User":
+            from utils.formatting import get_user_mention
+            self.requester_mention = get_user_mention(self.requester_id, self.requester_name, self.requester_username)
+
     @property
     def playable_source(self) -> Optional[str]:
         """Returns local file path if downloaded and exists, else stream_url if valid. Never returns a watch webpage URL."""
@@ -55,6 +72,12 @@ class Track:
             "requester_user_id": self.requester_user_id,
             "requester_name": self.requester_name,
             "created_at": self.created_at,
+            "source": self.source,
+            "requester_id": self.requester_id,
+            "requester_username": self.requester_username,
+            "requester_mention": self.requester_mention,
+            "request_id": self.request_id,
+            "thumbnail_url": self.thumbnail_url,
         }
 
 

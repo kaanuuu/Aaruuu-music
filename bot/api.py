@@ -395,8 +395,8 @@ class TelegramAPIClient:
                 if row:
                     rows.append(row)
 
-        full_text = "\n\n".join([t for t in texts if t.strip()]) or "Aaruu Music"
-        inline_kb = {"inline_keyboard": rows} if rows else None
+        full_text = "\n\n".join([t for t in texts if t.strip()]) or "Music Player"
+        inline_kb = None
         return full_text, thumbnail, inline_kb
 
     async def set_command_scopes(self, public_commands: List[Dict[str, str]]) -> None:

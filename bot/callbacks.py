@@ -7,19 +7,19 @@ and triggers instant UI updates with clean typography and owner access control.
 import time
 from typing import Any, Dict
 from bot.api import bot_api_client
-from bot.permissions import is_chat_admin, is_sudo
+from bot.permissions import is_chat_admin, is_sudo, can_skip_or_stop
 from bot.rich_help import build_start_rich_message
 from bot.rich_player import build_player_rich_message, build_queue_rich_message
 from database.db import Database
 from player.manager import player_manager
-from utils.typography import to_small_caps
+from utils.typography import to_bold_sans, to_small_caps
 
 db = Database()
 _DEBOUNCE_TIMESTAMPS: Dict[str, float] = {}
 
 
 async def handle_callback_query(update: Dict[str, Any]) -> None:
-    """Processes incoming Telegram callback queries with fast responses."""
+    """Processes incoming Telegram callback queries with fast responses and secure validation."""
     cq = update.get("callback_query", {})
     cq_id = cq.get("id")
     data = cq.get("data", "")
@@ -33,7 +33,7 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
     if not cq_id or not chat_id:
         return
 
-    # In-flight debounce: ignore duplicate rapid double-taps within 700ms on the same button
+    # Debounce: ignore duplicate rapid double-taps within 700ms on the same button
     now = time.time()
     debounce_key = f"{chat_id}:{message_id}:{data}"
     if now - _DEBOUNCE_TIMESTAMPS.get(debounce_key, 0) < 0.7:
@@ -45,9 +45,32 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
     if user_id and db.is_user_blocked(user_id):
         await bot_api_client.answer_callback_query(
             cq_id,
-            "🚫 You have been blocked by the bot owner and cannot use Aaruu Music.",
+            "🚫 You have been blocked by the bot owner and cannot use this music bot.",
             show_alert=True,
         )
+        return
+
+    # UNIVERSAL CANCEL Callback Handler
+    if data.startswith("request:cancel:"):
+        parts = data.split(":")
+        if len(parts) >= 4:
+            req_id_str = parts[2]
+            requester_id = int(parts[3])
+            
+            # User A cannot cancel User B's request (unless they are admin or owner)
+            is_adm = await is_chat_admin(chat_id, user_id)
+            if user_id != requester_id and not is_adm:
+                await bot_api_client.answer_callback_query(
+                    cq_id, "⚠️ You cannot cancel another user's request!", show_alert=True
+                )
+                return
+            
+            # Record cancellation in the centralized player manager
+            player_manager.cancelled_requests.add(req_id_str)
+            await bot_api_client.answer_callback_query(cq_id, "❌ Request cancelled.")
+            await bot_api_client.edit_message_text(
+                chat_id, message_id, "❌ " + to_small_caps("request was cancelled by the user.")
+            )
         return
 
     # Check for Search callbacks: search_select:<index>
@@ -94,35 +117,139 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
     state = await player_manager.get_state(chat_id)
     queue = await player_manager.get_queue(chat_id)
 
-    # Stale button recovery: if session_id changed but music is active, adopt current session
+    # Invalidate old buttons if session rotates
     if state.session_id != session_id and not state.current_track:
         await bot_api_client.answer_callback_query(
             cq_id, "This player is no longer active.", show_alert=True
         )
         return
 
-    if action == "pause":
-        success, msg = await player_manager.pause(chat_id, session_id)
-        await bot_api_client.answer_callback_query(cq_id, msg)
+    # Secure Player Controls
+    if action in ("pause", "resume", "replay"):
+        # Server-side validation: Requester or Admin only
+        if not await can_skip_or_stop(chat_id, user_id, state):
+            await bot_api_client.answer_callback_query(
+                cq_id, "⚠️ Only the requester or administrators can control the player.", show_alert=True
+            )
+            return
+
+        if action == "pause":
+            success, msg = await player_manager.pause(chat_id, session_id)
+            await bot_api_client.answer_callback_query(cq_id, msg)
+        elif action == "resume":
+            success, msg = await player_manager.resume(chat_id, session_id)
+            await bot_api_client.answer_callback_query(cq_id, msg)
+        elif action == "replay":
+            success, msg = await player_manager.replay(chat_id, session_id)
+            await bot_api_client.answer_callback_query(cq_id, msg)
+
         rich_msg = build_player_rich_message(state, queue)
         await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
-    elif action == "resume":
-        success, msg = await player_manager.resume(chat_id, session_id)
-        await bot_api_client.answer_callback_query(cq_id, msg)
+    elif action == "skip":
+        # Server-side permission check for Skip
+        if await can_skip_or_stop(chat_id, user_id, state):
+            # Direct Skip authorized!
+            next_track, msg = await player_manager.skip(chat_id, session_id)
+            await bot_api_client.answer_callback_query(cq_id, msg)
+            if next_track:
+                rich_msg = build_player_rich_message(state, queue)
+                await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+            else:
+                await bot_api_client.send_message(
+                    chat_id, "⏹ " + to_small_caps("playback ended. queue is empty.")
+                )
+        else:
+            # Unauthorized -> Start set-based Vote Skip!
+            threshold = 3
+            if not hasattr(state, "skip_votes"):
+                state.skip_votes = set()
+
+            # Ignore duplicates
+            if user_id in state.skip_votes:
+                await bot_api_client.answer_callback_query(
+                    cq_id, f"⚠️ You have already voted to skip! ({len(state.skip_votes)}/{threshold})", show_alert=True
+                )
+                return
+
+            state.skip_votes.add(user_id)
+
+            if len(state.skip_votes) >= threshold:
+                state.skip_votes.clear()
+                await bot_api_client.answer_callback_query(cq_id, "⏭ Vote threshold reached! Skipping...")
+                await bot_api_client.send_message(chat_id, f"⏭️ {to_bold_sans('VOTE SKIP SUCCESSFUL')}! Skipping to next track...")
+                next_track, msg = await player_manager.skip(chat_id, session_id)
+                if next_track:
+                    rich_msg = build_player_rich_message(state, queue)
+                    await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+                else:
+                    await bot_api_client.send_message(
+                        chat_id, "⏹ " + to_small_caps("playback ended. queue is empty.")
+                    )
+            else:
+                await bot_api_client.answer_callback_query(
+                    cq_id, f"⏭ Vote Skip — {len(state.skip_votes)}/{threshold}", show_alert=True
+                )
+
+    elif action in ("loop", "autoplay", "shuffle", "undo"):
+        # Administrative commands require chat admin check
+        if not await is_chat_admin(chat_id, user_id):
+            await bot_api_client.answer_callback_query(
+                cq_id, "⚠️ Only administrators can change playback settings.", show_alert=True
+            )
+            return
+
+        if action == "loop":
+            mode, msg = await player_manager.toggle_loop_mode(chat_id, session_id)
+            await bot_api_client.answer_callback_query(cq_id, msg)
+            rich_msg = build_player_rich_message(state, queue)
+            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+
+        elif action == "autoplay":
+            ap, msg = await player_manager.toggle_autoplay(chat_id, session_id)
+            await bot_api_client.answer_callback_query(cq_id, msg)
+            rich_msg = build_player_rich_message(state, queue)
+            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+
+        elif action == "shuffle":
+            count, msg = await player_manager.shuffle(chat_id)
+            await bot_api_client.answer_callback_query(cq_id, msg)
+            rich_msg = build_player_rich_message(state, queue)
+            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+
+        elif action == "undo":
+            removed = queue.undo_last()
+            if removed:
+                # Cleanup removed track's temporary file
+                if hasattr(removed, "local_filepath") and removed.local_filepath:
+                    import os
+                    if os.path.exists(removed.local_filepath):
+                        try:
+                            os.remove(removed.local_filepath)
+                        except Exception:
+                            pass
+                await bot_api_client.answer_callback_query(
+                    cq_id, f"Removed '{removed.title}' from queue."
+                )
+            else:
+                await bot_api_client.answer_callback_query(cq_id, "Queue is empty.")
+            queue_msg = build_queue_rich_message(state, queue)
+            await bot_api_client.edit_message_rich_text(chat_id, message_id, queue_msg)
+
+    elif action == "nowplaying":
+        await bot_api_client.answer_callback_query(cq_id)
         rich_msg = build_player_rich_message(state, queue)
         await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
-    elif action == "replay":
-        success, msg = await player_manager.replay(chat_id, session_id)
-        await bot_api_client.answer_callback_query(cq_id, msg)
-        rich_msg = build_player_rich_message(state, queue)
-        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+    elif action == "queue":
+        await bot_api_client.answer_callback_query(cq_id)
+        queue_msg = build_queue_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, queue_msg)
 
     elif action == "prev":
         if not await is_chat_admin(chat_id, user_id):
             await bot_api_client.answer_callback_query(
-                cq_id, "Only chat admins can change tracks.", show_alert=True
+                cq_id, "⚠️ Only administrators can change tracks.", show_alert=True
             )
             return
         prev_track, msg = await player_manager.previous(chat_id, session_id)
@@ -130,81 +257,5 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         rich_msg = build_player_rich_message(state, queue)
         await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
-    elif action == "loop":
-        if not await is_chat_admin(chat_id, user_id):
-            await bot_api_client.answer_callback_query(
-                cq_id, "Only chat admins can change loop mode.", show_alert=True
-            )
-            return
-        mode, msg = await player_manager.toggle_loop_mode(chat_id, session_id)
-        await bot_api_client.answer_callback_query(cq_id, msg)
-        rich_msg = build_player_rich_message(state, queue)
-        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
-
-    elif action == "autoplay":
-        if not await is_chat_admin(chat_id, user_id):
-            await bot_api_client.answer_callback_query(
-                cq_id, "Only chat admins can toggle autoplay.", show_alert=True
-            )
-            return
-        ap, msg = await player_manager.toggle_autoplay(chat_id, session_id)
-        await bot_api_client.answer_callback_query(cq_id, msg)
-        rich_msg = build_player_rich_message(state, queue)
-        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
-
-    elif action == "nowplaying":
-        await bot_api_client.answer_callback_query(cq_id)
-        rich_msg = build_player_rich_message(state, queue)
-        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
-
-    elif action == "skip":
-        # Skip requires admin authorization in groups
-        if not await is_chat_admin(chat_id, user_id):
-            await bot_api_client.answer_callback_query(
-                cq_id, "Only chat admins can skip tracks.", show_alert=True
-            )
-            return
-
-        next_track, msg = await player_manager.skip(chat_id, session_id)
-        await bot_api_client.answer_callback_query(cq_id, msg)
-        if next_track:
-            rich_msg = build_player_rich_message(state, queue)
-            await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
-        else:
-            await bot_api_client.send_message(
-                chat_id, "⏹ " + to_small_caps("playback ended. queue is empty.")
-            )
-
-    elif action == "queue":
-        await bot_api_client.answer_callback_query(cq_id)
-        queue_msg = build_queue_rich_message(state, queue)
-        await bot_api_client.edit_message_rich_text(chat_id, message_id, queue_msg)
-
-    elif action == "shuffle":
-        count, msg = await player_manager.shuffle(chat_id)
-        await bot_api_client.answer_callback_query(cq_id, msg)
-        rich_msg = build_player_rich_message(state, queue)
-        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
-
-    elif action == "undo":
-        if not await is_chat_admin(chat_id, user_id):
-            await bot_api_client.answer_callback_query(
-                cq_id, "Only chat admins can remove queued songs.", show_alert=True
-            )
-            return
-        removed = queue.undo_last()
-        if removed:
-            await bot_api_client.answer_callback_query(
-                cq_id, f"Removed '{removed.title}' from queue."
-            )
-        else:
-            await bot_api_client.answer_callback_query(cq_id, "Queue is empty.")
-        queue_msg = build_queue_rich_message(state, queue)
-        await bot_api_client.edit_message_rich_text(chat_id, message_id, queue_msg)
-
-    elif action == "close":
-        await bot_api_client.answer_callback_query(cq_id, "Closed.")
-        await bot_api_client.delete_message(chat_id, message_id)
-
     else:
-        await bot_api_client.answer_callback_query(cq_id, "Unknown button.")
+        await bot_api_client.answer_callback_query(cq_id, "Unknown button action.")

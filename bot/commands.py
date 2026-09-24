@@ -8,7 +8,7 @@ Restricts and hides owner-only commands from regular users.
 import time
 from typing import Any, Dict, List
 from bot.api import bot_api_client
-from bot.permissions import is_chat_admin, is_owner, is_sudo
+from bot.permissions import is_chat_admin, is_owner, is_sudo, can_skip_or_stop
 from bot.rich_help import build_start_rich_message
 from bot.rich_player import build_player_rich_message, build_queue_rich_message
 from database.db import Database
@@ -236,6 +236,16 @@ async def handle_search_select(
 
 async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, username: str) -> None:
     chat_id = message["chat"]["id"]
+    state = await player_manager.get_state(chat_id)
+    queue = await player_manager.get_queue(chat_id)
+
+    # Clean up any existing player message in the chat to prevent spamming
+    if state.player_message_id:
+        try:
+            await bot_api_client.delete_message(chat_id, state.player_message_id)
+        except Exception:
+            pass
+        state.player_message_id = None
 
     # Verify and auto-invite assistant in group chats before streaming
     if chat_id < 0 and voice_assistant.is_configured:
@@ -273,17 +283,62 @@ async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, 
                     )
                     return
 
-    # Check if player is currently inactive and send immediate download status feedback
-    state = await player_manager.get_state(chat_id)
+    # Check if player is currently inactive and send immediate cancelable downloading status card
     status_id = None
+    import uuid
+    request_id = getattr(track, "request_id", None) or str(uuid.uuid4())[:8]
+    track.request_id = request_id
+
+    # Populate track with rich requester info if missing
+    track.requester_user_id = user_id
+    track.requester_name = username
+    track.requester_username = message.get("from", {}).get("username")
+    from utils.formatting import get_user_mention
+    track.requester_mention = get_user_mention(user_id, username, track.requester_username)
+
     if not state.is_playing:
-        status = await bot_api_client.send_message(
-            chat_id, f"⬇️ {to_small_caps('downloading & buffering')}: {track.title}..."
-        )
+        cancel_card = {
+            "type": "rich_message",
+            "blocks": [
+                {
+                    "type": "heading",
+                    "text": to_bold_sans("PREPARING PLAYBACK"),
+                    "size": 1,
+                },
+                {
+                    "type": "paragraph",
+                    "text": f"⬇️ {to_small_caps('downloading & buffering')}: {track.title}...\n"
+                            f"🙋 {to_small_caps('requested by')}: {track.requester_mention}\n\n"
+                            f"⌛ " + to_small_caps("please wait while we buffer and prepare the voice stream..."),
+                },
+                {
+                    "type": "buttons",
+                    "buttons": [
+                        {
+                            "text": "❌ " + to_small_caps("cancel"),
+                            "style": "danger",
+                            "callback_data": f"request:cancel:{request_id}:{user_id}",
+                        }
+                    ],
+                    "align": "center",
+                }
+            ]
+        }
+        status = await bot_api_client.send_rich_message(chat_id, cancel_card)
         status_id = status.get("result", {}).get("message_id")
 
+    # If the request was cancelled while the card was being sent or created, stop immediately
+    if request_id in player_manager.cancelled_requests:
+        player_manager.cancelled_requests.remove(request_id)
+        if status_id:
+            try:
+                await bot_api_client.delete_message(chat_id, status_id)
+            except Exception:
+                pass
+        return
+
     is_now_playing, state, queue = await player_manager.play_or_queue(
-        chat_id, track, {"id": user_id, "name": username}
+        chat_id, track, {"id": user_id, "name": username, "username": track.requester_username, "mention": track.requester_mention}
     )
 
     if status_id:
@@ -291,6 +346,14 @@ async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, 
             await bot_api_client.delete_message(chat_id, status_id)
         except Exception:
             pass
+
+    # Double check if request was cancelled during download
+    if request_id in player_manager.cancelled_requests:
+        player_manager.cancelled_requests.remove(request_id)
+        # If it started playing, stop it immediately
+        if is_now_playing:
+            await player_manager.stop(chat_id)
+        return
 
     if voice_assistant.last_error and not state.is_playing and not is_now_playing:
         err_text = voice_assistant.last_error
@@ -537,15 +600,53 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
             await _play_track_direct(message, selected_track, user_id, username)
             return
 
-    # Inform user of resolution
-    status_msg = await bot_api_client.send_message(
-        chat_id, f"🔎 {to_small_caps('searching and preparing')}: {sanitize_text(args_text, 50)}..."
-    )
+    # Inform user of resolution with a beautiful cancelable card
+    import uuid
+    request_id = str(uuid.uuid4())[:8]
+
+    cancel_card = {
+        "type": "rich_message",
+        "blocks": [
+            {
+                "type": "heading",
+                "text": to_bold_sans("SEARCHING SONGS"),
+                "size": 1,
+            },
+            {
+                "type": "paragraph",
+                "text": f"🔎 {to_small_caps('searching & preparing')}: \"{sanitize_text(args_text, 50)}\"...\n"
+                        f"🙋 {to_small_caps('requested by')}: @{username}\n\n"
+                        f"⌛ " + to_small_caps("please wait while we search and prepare the media stream..."),
+            },
+            {
+                "type": "buttons",
+                "buttons": [
+                    {
+                        "text": "❌ " + to_small_caps("cancel"),
+                        "style": "danger",
+                        "callback_data": f"request:cancel:{request_id}:{user_id}",
+                    }
+                ],
+                "align": "center",
+            }
+        ]
+    }
+
+    status_msg = await bot_api_client.send_rich_message(chat_id, cancel_card)
     status_msg_id = status_msg.get("result", {}).get("message_id")
 
     track = await extractor.extract(args_text, user_id, username)
+
     if status_msg_id:
-        await bot_api_client.delete_message(chat_id, status_msg_id)
+        try:
+            await bot_api_client.delete_message(chat_id, status_msg_id)
+        except Exception:
+            pass
+
+    # Check if request was cancelled during extraction
+    if request_id in player_manager.cancelled_requests:
+        player_manager.cancelled_requests.remove(request_id)
+        return
 
     if not track or not track.stream_url:
         await bot_api_client.send_message(
@@ -555,13 +656,22 @@ async def handle_play(message: Dict[str, Any], args_text: str) -> None:
         )
         return
 
+    track.request_id = request_id
     await _play_track_direct(message, track, user_id, username)
 
 
 async def handle_pause(message: Dict[str, Any]) -> None:
     chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
     state = await player_manager.get_state(chat_id)
     queue = await player_manager.get_queue(chat_id)
+
+    if not await can_skip_or_stop(chat_id, from_id, state):
+        await bot_api_client.send_message(
+            chat_id, "⚠️ " + to_small_caps("only the requester or administrators can pause the player.")
+        )
+        return
+
     success, msg = await player_manager.pause(chat_id, state.session_id)
     if success:
         rich_player = build_player_rich_message(state, queue)
@@ -577,8 +687,16 @@ async def handle_pause(message: Dict[str, Any]) -> None:
 
 async def handle_resume(message: Dict[str, Any]) -> None:
     chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
     state = await player_manager.get_state(chat_id)
     queue = await player_manager.get_queue(chat_id)
+
+    if not await can_skip_or_stop(chat_id, from_id, state):
+        await bot_api_client.send_message(
+            chat_id, "⚠️ " + to_small_caps("only the requester or administrators can resume the player.")
+        )
+        return
+
     success, msg = await player_manager.resume(chat_id, state.session_id)
     if success:
         rich_player = build_player_rich_message(state, queue)
@@ -594,8 +712,16 @@ async def handle_resume(message: Dict[str, Any]) -> None:
 
 async def handle_replay(message: Dict[str, Any]) -> None:
     chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
     state = await player_manager.get_state(chat_id)
     queue = await player_manager.get_queue(chat_id)
+
+    if not await can_skip_or_stop(chat_id, from_id, state):
+        await bot_api_client.send_message(
+            chat_id, "⚠️ " + to_small_caps("only the requester or administrators can replay the track.")
+        )
+        return
+
     success, msg = await player_manager.replay(chat_id, state.session_id)
     if success:
         rich_player = build_player_rich_message(state, queue)
@@ -612,22 +738,45 @@ async def handle_replay(message: Dict[str, Any]) -> None:
 async def handle_skip(message: Dict[str, Any]) -> None:
     chat_id = message["chat"]["id"]
     from_id = message.get("from", {}).get("id", 0)
-
-    if not await is_chat_admin(chat_id, from_id):
-        await bot_api_client.send_message(
-            chat_id, "⚠️ " + to_small_caps("only chat administrators can skip tracks.")
-        )
-        return
-
-    next_track, msg = await player_manager.skip(chat_id)
     state = await player_manager.get_state(chat_id)
     queue = await player_manager.get_queue(chat_id)
-    if next_track and state and state.current_track:
-        rich_player = build_player_rich_message(state, queue)
-        res = await bot_api_client.send_rich_message(chat_id, rich_player)
-        state.player_message_id = res.get("result", {}).get("message_id")
+
+    if await can_skip_or_stop(chat_id, from_id, state):
+        next_track, msg = await player_manager.skip(chat_id)
+        if next_track and state and state.current_track:
+            rich_player = build_player_rich_message(state, queue)
+            res = await bot_api_client.send_rich_message(chat_id, rich_player)
+            state.player_message_id = res.get("result", {}).get("message_id")
+        else:
+            await bot_api_client.send_message(chat_id, f"⏭ {msg}")
     else:
-        await bot_api_client.send_message(chat_id, f"⏭ {msg}")
+        # Vote Skip
+        threshold = 3
+        if not hasattr(state, "skip_votes"):
+            state.skip_votes = set()
+
+        if from_id in state.skip_votes:
+            await bot_api_client.send_message(
+                chat_id, f"⚠️ " + to_small_caps(f"you have already voted to skip! ({len(state.skip_votes)}/{threshold})")
+            )
+            return
+
+        state.skip_votes.add(from_id)
+
+        if len(state.skip_votes) >= threshold:
+            state.skip_votes.clear()
+            await bot_api_client.send_message(chat_id, f"⏭️ {to_bold_sans('VOTE SKIP SUCCESSFUL')}! Skipping to next track...")
+            next_track, msg = await player_manager.skip(chat_id)
+            if next_track and state and state.current_track:
+                rich_player = build_player_rich_message(state, queue)
+                res = await bot_api_client.send_rich_message(chat_id, rich_player)
+                state.player_message_id = res.get("result", {}).get("message_id")
+            else:
+                await bot_api_client.send_message(chat_id, f"⏹ {msg}")
+        else:
+            await bot_api_client.send_message(
+                chat_id, f"⏭️ {to_bold_sans('VOTE SKIP REGISTERED')} • {len(state.skip_votes)}/{threshold} votes"
+            )
 
 
 async def handle_queue(message: Dict[str, Any]) -> None:
@@ -641,10 +790,11 @@ async def handle_queue(message: Dict[str, Any]) -> None:
 async def handle_stop(message: Dict[str, Any]) -> None:
     chat_id = message["chat"]["id"]
     from_id = message.get("from", {}).get("id", 0)
+    state = await player_manager.get_state(chat_id)
 
-    if not await is_chat_admin(chat_id, from_id):
+    if not await can_skip_or_stop(chat_id, from_id, state):
         await bot_api_client.send_message(
-            chat_id, "⚠️ " + to_small_caps("only chat administrators can stop the player.")
+            chat_id, "⚠️ " + to_small_caps("only the requester or administrators can stop the player.")
         )
         return
 
