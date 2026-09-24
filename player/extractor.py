@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 from typing import Any, Dict, List, Optional
 from player.models import Track
+from player.voice_chat import verify_media_file_with_ffmpeg
 from utils.escaping import sanitize_text
 from utils.logging import logger
 
@@ -395,12 +396,13 @@ class MediaExtractor:
             None, self._extract_soundcloud, clean_query, requester_id, requester_name
         )
         if sc_track and sc_track.stream_url:
-            is_valid, score, _ = validate_and_score_track(clean_input, sc_track)
-            if is_valid:
+            is_valid, score, reason = validate_and_score_track(clean_input, sc_track)
+            if is_valid or score >= 0.2:
                 sc_track.is_video = False
                 sc_track.media_type = "audio"
                 ok, _ = await verify_media_file_with_ffmpeg(sc_track.playable_source or sc_track.stream_url)
                 if ok:
+                    logger.info("[EXTRACTOR] SoundCloud fallback verified and selected: '%s' by %s", sc_track.title, sc_track.artist)
                     return sc_track
 
         logger.warning("[EXTRACTOR] No valid audio stream found for '%s'", clean_input)

@@ -29,7 +29,7 @@ class JioSaavnProvider:
         # Allow custom API base URL configuration via environment variables
         self.api_base = os.getenv("JIOSAAVN_API_BASE_URL") or os.getenv("SAAVN_API_URL") or "https://saavn.dev"
         self.api_base = self.api_base.rstrip("/")
-        self.timeout = 6
+        self.timeout = 2.5
 
     def _request_api(self, endpoint: str) -> Optional[Any]:
         """Performs a safe HTTP request to the JioSaavn API with dynamic endpoint fallbacks on DNS/network errors."""
