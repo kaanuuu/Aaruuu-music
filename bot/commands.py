@@ -974,3 +974,54 @@ async def handle_admincache(message: Dict[str, Any]) -> None:
     await bot_api_client.send_message(
         chat_id, f"🔄 {to_bold_sans('ADMIN CACHE REFRESHED')}\n\n{to_small_caps('permissions synced with telegram.')}"
     )
+
+
+async def handle_vctest(message: Dict[str, Any]) -> None:
+    """Runs a direct local playback diagnostic test (Chat Admins / Owner / Sudo)."""
+    chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
+
+    if not await is_chat_admin(chat_id, from_id):
+        await bot_api_client.send_message(
+            chat_id, "⚠️ " + to_small_caps("only administrators can run voice chat diagnostics.")
+        )
+        return
+
+    # Notify we are running the test
+    status_msg = await bot_api_client.send_message(
+        chat_id, f"🧪 {to_bold_sans('RUNNING PYTGCALLS PIPELINE DIAGNOSTIC')}..."
+    )
+    
+    results = await voice_assistant.run_vc_diagnostic(chat_id)
+    
+    # Format the results cleanly
+    lines = [
+        f"📊 {to_bold_sans('DIAGNOSTIC RESULTS')}\n",
+        f"📁 {to_small_caps('file exists')}: {'✅ TRUE' if results['file_exists'] else '❌ FALSE'}",
+    ]
+    if results["file_exists"]:
+        lines.append(f"📦 {to_small_caps('file size')}: {results['file_size']} bytes")
+        lines.append(f"⚙️ {to_small_caps('ffmpeg valid')}: {'✅ TRUE' if results['ffmpeg_valid'] else '❌ FALSE'}")
+        if not results["ffmpeg_valid"]:
+            lines.append(f"⚠️ {to_small_caps('ffmpeg error')}: {results['ffmpeg_log']}")
+            
+    lines.append(f"🤖 {to_small_caps('assistant connected')}: {'✅ TRUE' if results['pytgcalls_connected'] else '❌ FALSE'}")
+    lines.append(f"📞 {to_small_caps('vc state')}: {results['vc_state'].upper()}")
+    lines.append(f"📦 {to_small_caps('mediastream created')}: {'✅ TRUE' if results['mediastream_created'] else '❌ FALSE'}")
+    lines.append(f"▶️ {to_small_caps('pytgcalls play success')}: {'✅ TRUE' if results['play_success'] else '❌ FALSE'}")
+    
+    if results["error"]:
+        lines.append(f"\n❌ {to_bold_sans('DIAGNOSTIC ERROR')}: {results['error']}")
+    else:
+        lines.append(f"\n🎉 {to_bold_sans('ALL PIPELINE CHECKS PASSED!')}")
+        
+    await bot_api_client.send_message(chat_id, "\n".join(lines))
+    
+    # Delete status message
+    if status_msg:
+        try:
+            status_id = status_msg.get("result", {}).get("message_id")
+            if status_id:
+                await bot_api_client.delete_message(chat_id, status_id)
+        except Exception:
+            pass

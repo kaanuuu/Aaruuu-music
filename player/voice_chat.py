@@ -24,167 +24,8 @@ try:
     import pyrogram.errors
     import pyrogram.utils
 
-    # 1. Missing TL Types & Classes for PyTgCalls (e.g. InputGroupCallSlug)
-    try:
-        import pyrogram.raw.types
-        import pyrogram.raw.base
-
-        class _InputGroupCallSlug:
-            ID = 0xDBBA8818
-            QUALNAME = "types.InputGroupCallSlug"
-
-            def __init__(self, slug: str = ""):
-                self.slug = slug
-
-            @classmethod
-            def read(cls, b, *args, **kwargs):
-                return cls()
-
-            def write(self, *args, **kwargs):
-                return b""
-
-        setattr(pyrogram.raw.types, "InputGroupCallSlug", _InputGroupCallSlug)
-        if hasattr(pyrogram.raw, "base"):
-            setattr(pyrogram.raw.base, "InputGroupCallSlug", _InputGroupCallSlug)
-
-        def _make_dummy_tl(name: str):
-            class _DynamicTL:
-                ID = 0
-                QUALNAME = f"types.{name}"
-
-                def __init__(self, *args, **kwargs):
-                    for k, v in kwargs.items():
-                        setattr(self, k, v)
-
-                @classmethod
-                def read(cls, *args, **kwargs):
-                    return cls()
-
-                def write(self, *args, **kwargs):
-                    return b""
-
-            _DynamicTL.__name__ = name
-            return _DynamicTL
-
-        def _patched_raw_types_getattr(name: str):
-            cls = _make_dummy_tl(name)
-            setattr(pyrogram.raw.types, name, cls)
-            return cls
-
-        pyrogram.raw.types.__getattr__ = _patched_raw_types_getattr
-
-        if hasattr(pyrogram.raw, "base"):
-            def _patched_raw_base_getattr(name: str):
-                cls = _make_dummy_tl(name)
-                setattr(pyrogram.raw.base, name, cls)
-                return cls
-            pyrogram.raw.base.__getattr__ = _patched_raw_base_getattr
-
-        # Patch Pyrogram Raw TL Functions (phone.JoinGroupCall, etc.) to safely absorb Layer 180+ fields like 'public_key'
-        import inspect
-        import importlib
-        import pkgutil
-
-        def _make_safe_constructor(cls):
-            if not isinstance(cls, type):
-                return
-            # 1. Guarantee public_key attribute exists on the class
-            if not hasattr(cls, "public_key"):
-                setattr(cls, "public_key", None)
-
-            # 2. Add safe __getattr__ on the class for any other missing TL fields
-            orig_getattr = getattr(cls, "__getattr__", None)
-            def _safe_getattr(self, name):
-                if name in ("public_key", "block", "video_stopped", "muted", "invite_hash"):
-                    return None
-                if orig_getattr:
-                    return orig_getattr(self, name)
-                raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
-            cls.__getattr__ = _safe_getattr
-
-            # 3. Patch __init__ to absorb extra kwargs and initialize public_key
-            if not hasattr(cls, "__init__"):
-                return
-            orig_init = cls.__init__
-            if getattr(orig_init, "_is_safe_patched", False):
-                return
-            try:
-                sig = inspect.signature(orig_init)
-                has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-                param_keys = set(sig.parameters.keys())
-
-                def _safe_init(self, *args, **kwargs):
-                    pub_key = kwargs.pop("public_key", None)
-                    if not has_varkw:
-                        extra_keys = set(kwargs.keys()) - param_keys
-                        if extra_keys:
-                            for k in list(extra_keys):
-                                val = kwargs.pop(k, None)
-                                setattr(self, k, val)
-                    res = orig_init(self, *args, **kwargs)
-                    if pub_key is not None:
-                        self.public_key = pub_key
-                    return res
-
-                _safe_init._is_safe_patched = True
-                cls.__init__ = _safe_init
-            except Exception:
-                pass
-
-        global _patch_all_tl_classes
-        def _patch_all_tl_classes():
-            subpackages = [
-                "pyrogram.raw.functions.phone",
-                "pyrogram.raw.functions.channels",
-                "pyrogram.raw.functions.messages",
-                "pyrogram.raw.functions.account",
-                "pyrogram.raw.functions.users",
-                "pyrogram.raw.types",
-                "pyrogram.raw.types.phone",
-                "pyrogram.raw.base",
-                "pyrogram.raw.base.phone",
-            ]
-            for pkg in subpackages:
-                try:
-                    mod = importlib.import_module(pkg)
-                    for attr in dir(mod):
-                        _make_safe_constructor(getattr(mod, attr, None))
-                except Exception:
-                    pass
-
-            try:
-                if hasattr(pyrogram.raw, "__path__"):
-                    for _, modname, _ in pkgutil.walk_packages(pyrogram.raw.__path__, pyrogram.raw.__name__ + "."):
-                        try:
-                            mod = importlib.import_module(modname)
-                            for attr in dir(mod):
-                                _make_safe_constructor(getattr(mod, attr, None))
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-            try:
-                if hasattr(pyrogram.raw, "all") and hasattr(pyrogram.raw.all, "layer"):
-                    for cls in pyrogram.raw.all.layer.values():
-                        _make_safe_constructor(cls)
-            except Exception:
-                pass
-
-            for mod_name, mod in list(sys.modules.items()):
-                if mod and ("pyrogram" in mod_name or "tgcalls" in mod_name):
-                    for attr in dir(mod):
-                        try:
-                            val = getattr(mod, attr, None)
-                            if isinstance(val, type) and hasattr(val, "__init__"):
-                                if "GroupCall" in attr or attr == "JoinGroupCall":
-                                    _make_safe_constructor(val)
-                        except Exception:
-                            pass
-
-        _patch_all_tl_classes()
-    except Exception:
-        pass
+    # 1. Missing TL Types & Classes for PyTgCalls (e.g. InputGroupCallSlug) removed to prevent Circular reference/Pydantic serialization errors.
+    pass
 
     # 2. Patch missing legacy errors that PyTgCalls imports from pyrogram.errors in Pyrogram v2
     _legacy_exceptions = [
@@ -475,8 +316,9 @@ class VoiceChatAssistant:
                 try:
                     logger.info("Voice Chat: Pre-caching assistant dialogs and access hashes...")
                     async for dialog in self.app.get_dialogs():
-                        pass
-                    logger.info("Voice Chat: Assistant dialogs pre-cached successfully.")
+                        if dialog.chat:
+                            self._resolved_peers.add(dialog.chat.id)
+                    logger.info("Voice Chat: Assistant dialogs pre-cached successfully. Cached %s resolved peers.", len(self._resolved_peers))
                 except Exception as d_err:
                     logger.debug("Voice Chat: Dialog pre-caching note: %s", str(d_err))
             except Exception as e:
@@ -546,13 +388,6 @@ class VoiceChatAssistant:
         """Streams audio_source (URL or file) into the group voice chat call."""
         if self.pytgcalls and self.is_connected:
             try:
-                # Ensure all Pyrogram TL objects are patched right before PyTgCalls joins or starts stream
-                try:
-                    if "_patch_all_tl_classes" in globals():
-                        globals()["_patch_all_tl_classes"]()
-                except Exception:
-                    pass
-
                 # Playable stream URL
                 playable_stream = audio_source
 
@@ -679,7 +514,7 @@ class VoiceChatAssistant:
 
                 logger.info("[MEDIA-PIPELINE DEBUG] 8. Creating PyTgCalls media stream object...")
                 stream_obj = _build_stream(playable_stream)
-                logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object: %s", str(stream_obj))
+                logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object of type: %s", type(stream_obj).__name__)
 
                 async def _do_stream():
                     # PyTgCalls v1 API (join_group_call)
@@ -698,15 +533,7 @@ class VoiceChatAssistant:
                     # PyTgCalls v2 API (play)
                     elif hasattr(self.pytgcalls, "play"):
                         logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls play() for chat %s", chat_id)
-                        if chat_id in self.active_chats and hasattr(self.pytgcalls, "change_stream"):
-                            try:
-                                logger.info("[MEDIA-PIPELINE DEBUG] Attempting to change stream...")
-                                await self.pytgcalls.change_stream(chat_id, stream_obj)
-                            except Exception as change_err:
-                                logger.info("[MEDIA-PIPELINE DEBUG] change_stream failed (%s), falling back to play", str(change_err))
-                                await self.pytgcalls.play(chat_id, stream_obj)
-                        else:
-                            await self.pytgcalls.play(chat_id, stream_obj)
+                        await self.pytgcalls.play(chat_id, stream_obj)
 
                     elif hasattr(self.pytgcalls, "join_call"):
                         logger.info("[MEDIA-PIPELINE DEBUG] 9. Invoking PyTgCalls join_call() for chat %s", chat_id)
@@ -809,6 +636,96 @@ class VoiceChatAssistant:
             del self.active_chats[chat_id]
             return True
         return False
+
+    async def run_vc_diagnostic(self, chat_id: int) -> dict:
+        """
+        Runs a comprehensive diagnostic of the PyTgCalls playback pipeline on /tmp/aaruu_cache/test.mp3.
+        Returns a dictionary of diagnostic results.
+        """
+        results = {
+            "file_exists": False,
+            "file_size": 0,
+            "ffmpeg_valid": False,
+            "ffmpeg_log": "",
+            "pytgcalls_connected": False,
+            "vc_state": "disconnected",
+            "mediastream_created": False,
+            "play_success": False,
+            "error": None
+        }
+        
+        try:
+            # 1. Setup cache & test file
+            cache_dir = "/tmp/aaruu_cache"
+            test_path = os.path.join(cache_dir, "test.mp3")
+            
+            # If test.mp3 doesn't exist, try to copy any existing mp3 from cache
+            if not os.path.exists(test_path):
+                if os.path.exists(cache_dir):
+                    mp3_files = [f for f in os.listdir(cache_dir) if f.endswith(".mp3") and f != "test.mp3"]
+                    if mp3_files:
+                        import shutil
+                        shutil.copy(os.path.join(cache_dir, mp3_files[0]), test_path)
+                        logger.info("Diagnostic: Copied %s to test.mp3", mp3_files[0])
+            
+            # Check file presence
+            results["file_exists"] = os.path.exists(test_path)
+            if results["file_exists"]:
+                results["file_size"] = os.path.getsize(test_path)
+                
+                # 2. FFmpeg validation
+                success, ffmpeg_log = await verify_media_file_with_ffmpeg(test_path)
+                results["ffmpeg_valid"] = success
+                results["ffmpeg_log"] = ffmpeg_log
+            else:
+                results["error"] = "No test file found in cache."
+                return results
+
+            # 3. PyTgCalls connected check
+            results["pytgcalls_connected"] = bool(self.pytgcalls and self.is_connected)
+            if not results["pytgcalls_connected"]:
+                results["error"] = "PyTgCalls or Assistant is not connected/started."
+                return results
+                
+            # 4. VC / Call State
+            results["vc_state"] = "active" if chat_id in self.active_chats else "inactive"
+            
+            # 5. MediaStream creation
+            stream_obj = None
+            try:
+                if MediaStream:
+                    from pytgcalls.types import AudioQuality
+                    stream_obj = MediaStream(test_path, audio_parameters=AudioQuality.HIGH)
+                elif AudioPiped:
+                    stream_obj = AudioPiped(test_path)
+                else:
+                    stream_obj = test_path
+                    
+                results["mediastream_created"] = (stream_obj is not None)
+            except Exception as stream_err:
+                results["error"] = f"MediaStream creation failed: {str(stream_err)}"
+                return results
+
+            # 6. PyTgCalls.play()
+            try:
+                if hasattr(self.pytgcalls, "play"):
+                    await self.pytgcalls.play(chat_id, stream_obj)
+                    results["play_success"] = True
+                elif hasattr(self.pytgcalls, "join_group_call"):
+                    await self.pytgcalls.join_group_call(chat_id, stream_obj)
+                    results["play_success"] = True
+                else:
+                    results["error"] = "No play or join_group_call method found on PyTgCalls client."
+            except Exception as play_err:
+                results["error"] = f"PyTgCalls play invocation failed: {str(play_err)}"
+                return results
+                
+            self.active_chats[chat_id] = {"source": test_path, "status": "playing"}
+            
+        except Exception as general_err:
+            results["error"] = f"Unexpected diagnostic error: {str(general_err)}"
+            
+        return results
 
 
 voice_assistant = VoiceChatAssistant()
