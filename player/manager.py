@@ -21,13 +21,14 @@ class PlayerManager:
         self._locks: Dict[int, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
 
-    async def _download_track(self, track: Track) -> None:
+    async def _download_track(self, track: Track) -> bool:
         try:
             from player.extractor import MediaExtractor
             extractor = MediaExtractor()
-            await extractor.download_track(track)
+            return await extractor.download_track(track)
         except Exception as e:
             logger.warning("Could not download track inline in player manager: %s", str(e))
+            return False
 
     async def _update_playback_ui(self, chat_id: int) -> None:
         try:
@@ -230,7 +231,7 @@ class PlayerManager:
         async with lock:
             state = self._states.get(chat_id)
             queue = self._queues.get(chat_id) or TrackQueue()
-            if not state or not state.is_playing:
+            if not state:
                 return None, "Player inactive."
 
             old_track = state.current_track
@@ -239,42 +240,54 @@ class PlayerManager:
             if old_track and state.loop_mode == "track":
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
-                await self._download_track(old_track)
-                
-                state.playback_status = "starting"
-                await self._update_playback_ui(chat_id)
-                
-                stream_ok = await voice_assistant.play_audio(chat_id, old_track.playable_source)
-                if stream_ok:
-                    state.is_playing = True
-                    state.playback_status = "playing"
-                    state.started_at = time.time()
-                    state.paused_at = None
-                    state.pause_duration_offset = 0.0
+                download_success = await self._download_track(old_track)
+                if download_success:
+                    state.playback_status = "starting"
                     await self._update_playback_ui(chat_id)
-                    return old_track, f"Looping track: {old_track.title}"
-                else:
-                    state.stop()
-                    await self._update_playback_ui(chat_id)
-                    return None, f"Failed to loop track: {old_track.title}"
-            elif old_track and state.loop_mode == "queue":
+                    stream_ok = await voice_assistant.play_audio(chat_id, old_track.playable_source)
+                    if stream_ok:
+                        state.is_playing = True
+                        state.playback_status = "playing"
+                        state.started_at = time.time()
+                        state.paused_at = None
+                        state.pause_duration_offset = 0.0
+                        await self._update_playback_ui(chat_id)
+                        return old_track, f"Looping track: {old_track.title}"
+                logger.warning("[PLAYER] Looping track failed: '%s'. Advancing to queue.", old_track.title)
+
+            if old_track and state.loop_mode == "queue":
                 queue.add(old_track)
 
-            next_track = queue.pop()
-            if next_track:
+            # Keep popping and playing from queue until we find one that works or queue is empty
+            while len(queue) > 0:
+                next_track = queue.pop()
+                if not next_track:
+                    continue
+
                 # Prepare playback track properties
                 state.current_track = next_track
                 state.requested_by = {"id": next_track.requester_user_id, "name": next_track.requester_name}
                 state.is_paused = False
                 state.new_session()
-                
+
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
-                await self._download_track(next_track)
                 
+                download_success = await self._download_track(next_track)
+                if not download_success:
+                    logger.warning("[PLAYER] Track failed extraction: '%s'. Removing and trying next.", next_track.title)
+                    try:
+                        from bot.api import bot_api_client
+                        await bot_api_client.send_message(
+                            chat_id, f"⚠️ " + to_small_caps(f"extraction failed for '{next_track.title}'. skipping...")
+                        )
+                    except Exception:
+                        pass
+                    continue
+
                 state.playback_status = "starting"
                 await self._update_playback_ui(chat_id)
-                
+
                 stream_ok = await voice_assistant.play_audio(chat_id, next_track.playable_source)
                 if stream_ok:
                     state.is_playing = True
@@ -285,9 +298,15 @@ class PlayerManager:
                     await self._update_playback_ui(chat_id)
                     return next_track, f"Now playing: {next_track.title}"
                 else:
-                    state.stop()
-                    await self._update_playback_ui(chat_id)
-                    return None, f"Failed to play next track: {next_track.title}"
+                    logger.warning("[PLAYER] Track failed playback: '%s' (%s). Trying next.", next_track.title, voice_assistant.last_error)
+                    try:
+                        from bot.api import bot_api_client
+                        await bot_api_client.send_message(
+                            chat_id, f"⚠️ " + to_small_caps(f"playback failed for '{next_track.title}': {voice_assistant.last_error or 'Stream error'}. skipping...")
+                        )
+                    except Exception:
+                        pass
+                    continue
 
             # Queue empty -> Check Autoplay
             if state.autoplay and old_track:
@@ -304,24 +323,19 @@ class PlayerManager:
                     
                     state.playback_status = "preparing"
                     await self._update_playback_ui(chat_id)
-                    await self._download_track(auto_track)
-                    
-                    state.playback_status = "starting"
-                    await self._update_playback_ui(chat_id)
-                    
-                    stream_ok = await voice_assistant.play_audio(chat_id, auto_track.playable_source)
-                    if stream_ok:
-                        state.is_playing = True
-                        state.playback_status = "playing"
-                        state.started_at = time.time()
-                        state.paused_at = None
-                        state.pause_duration_offset = 0.0
+                    download_success = await self._download_track(auto_track)
+                    if download_success:
+                        state.playback_status = "starting"
                         await self._update_playback_ui(chat_id)
-                        return auto_track, f"Autoplay: {auto_track.title}"
-                    else:
-                        state.stop()
-                        await self._update_playback_ui(chat_id)
-                        return None, f"Failed to play autoplay: {auto_track.title}"
+                        stream_ok = await voice_assistant.play_audio(chat_id, auto_track.playable_source)
+                        if stream_ok:
+                            state.is_playing = True
+                            state.playback_status = "playing"
+                            state.started_at = time.time()
+                            state.paused_at = None
+                            state.pause_duration_offset = 0.0
+                            await self._update_playback_ui(chat_id)
+                            return auto_track, f"Autoplay: {auto_track.title}"
 
             state.stop()
             await voice_assistant.stop_audio(chat_id)
@@ -370,9 +384,39 @@ class PlayerManager:
         async with lock:
             state = self._states.get(chat_id)
             if not state or not state.current_track:
-                return False, "No active playback to seek."
+                return False, "No track is currently playing."
+            if seconds < 0:
+                return False, "Seek position must be 0 or greater."
+            if state.duration > 0 and seconds >= state.duration:
+                return False, f"Seek position ({seconds}s) exceeds track duration ({state.duration}s)."
+
             pos = state.seek(float(seconds))
-            return True, f"Seeked to {int(pos)}s."
+            
+            # 1. Preparing audio status
+            state.playback_status = "preparing"
+            await self._update_playback_ui(chat_id)
+            await self._download_track(state.current_track)
+
+            # 2. Starting playback status
+            state.playback_status = "starting"
+            await self._update_playback_ui(chat_id)
+
+            # 3. Stream with seek offset
+            stream_ok = await voice_assistant.play_audio(
+                chat_id, 
+                state.current_track.playable_source, 
+                seek_seconds=float(seconds)
+            )
+
+            if stream_ok:
+                state.is_playing = True
+                state.playback_status = "playing"
+                await self._update_playback_ui(chat_id)
+                return True, f"Seeked to {int(pos)} seconds."
+            else:
+                state.stop()
+                await self._update_playback_ui(chat_id)
+                return False, f"Failed to seek to {seconds} seconds: {voice_assistant.last_error or 'Stream error'}"
 
     async def set_volume(self, chat_id: int, volume: int) -> Tuple[bool, str]:
         lock = await self._get_lock(chat_id)
@@ -407,29 +451,30 @@ class PlayerManager:
             if old_track and state.loop_mode == "track":
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
-                await self._download_track(old_track)
-                
-                state.playback_status = "starting"
-                await self._update_playback_ui(chat_id)
-                
-                stream_ok = await voice_assistant.play_audio(chat_id, old_track.playable_source)
-                if stream_ok:
-                    state.is_playing = True
-                    state.playback_status = "playing"
-                    state.started_at = time.time()
-                    state.paused_at = None
-                    state.pause_duration_offset = 0.0
+                download_success = await self._download_track(old_track)
+                if download_success:
+                    state.playback_status = "starting"
                     await self._update_playback_ui(chat_id)
-                    return old_track, f"Looping track: {old_track.title}"
-                else:
-                    state.stop()
-                    await self._update_playback_ui(chat_id)
-                    return None, f"Failed to loop track: {old_track.title}"
-            elif old_track and state.loop_mode == "queue":
+                    stream_ok = await voice_assistant.play_audio(chat_id, old_track.playable_source)
+                    if stream_ok:
+                        state.is_playing = True
+                        state.playback_status = "playing"
+                        state.started_at = time.time()
+                        state.paused_at = None
+                        state.pause_duration_offset = 0.0
+                        await self._update_playback_ui(chat_id)
+                        return old_track, f"Looping track: {old_track.title}"
+                logger.warning("[PLAYER] Skip looping track failed: '%s'. Proceeding to queue.", old_track.title)
+
+            if old_track and state.loop_mode == "queue":
                 queue.add(old_track)
 
-            next_track = queue.pop()
-            if next_track:
+            # Try popping and playing from queue until we find one that works or queue is empty
+            while len(queue) > 0:
+                next_track = queue.pop()
+                if not next_track:
+                    continue
+
                 # Prepare skip playback track properties
                 state.current_track = next_track
                 state.requested_by = {"id": next_track.requester_user_id, "name": next_track.requester_name}
@@ -438,7 +483,18 @@ class PlayerManager:
                 
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
-                await self._download_track(next_track)
+                
+                download_success = await self._download_track(next_track)
+                if not download_success:
+                    logger.warning("[PLAYER] Skip target failed extraction: '%s'. Trying next track.", next_track.title)
+                    try:
+                        from bot.api import bot_api_client
+                        await bot_api_client.send_message(
+                            chat_id, f"⚠️ " + to_small_caps(f"extraction failed for '{next_track.title}'. skipping...")
+                        )
+                    except Exception:
+                        pass
+                    continue
                 
                 state.playback_status = "starting"
                 await self._update_playback_ui(chat_id)
@@ -453,9 +509,15 @@ class PlayerManager:
                     await self._update_playback_ui(chat_id)
                     return next_track, f"Skipped to: {next_track.title}"
                 else:
-                    state.stop()
-                    await self._update_playback_ui(chat_id)
-                    return None, f"Failed to skip to: {next_track.title}"
+                    logger.warning("[PLAYER] Skip target failed playback: '%s' (%s). Trying next track.", next_track.title, voice_assistant.last_error)
+                    try:
+                        from bot.api import bot_api_client
+                        await bot_api_client.send_message(
+                            chat_id, f"⚠️ " + to_small_caps(f"playback failed for '{next_track.title}': {voice_assistant.last_error or 'Stream error'}. skipping...")
+                        )
+                    except Exception:
+                        pass
+                    continue
             else:
                 state.stop()
                 await voice_assistant.stop_audio(chat_id)

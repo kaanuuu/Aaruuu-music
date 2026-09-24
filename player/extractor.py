@@ -116,7 +116,7 @@ class MediaExtractor:
             # Emulate iOS & TV clients which are least affected by datacenter bot checks
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["ios", "tv_embedded", "web_embedded", "mweb"],
+                    "player_client": ["ios", "android", "tv_embedded", "mweb"],
                     "player_skip": ["webpage", "configs"],
                 }
             },
@@ -683,7 +683,7 @@ class MediaExtractor:
                 "logger": YtDlpQuietLogger(),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["ios", "tv_embedded", "web_embedded", "mweb"],
+                        "player_client": ["ios", "android", "tv_embedded", "mweb"],
                         "player_skip": ["webpage", "configs"],
                     }
                 },

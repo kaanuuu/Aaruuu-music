@@ -308,42 +308,56 @@ async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, 
             )
             return
 
-        vc_alert = {
-            "type": "rich_message",
-            "blocks": [
-                {
-                    "type": "heading",
-                    "text": to_bold_sans("VOICE CHAT NOT ACTIVE"),
-                    "size": 1,
-                },
-                {
-                    "type": "photo",
-                    "photo": {
-                        "type": "photo",
-                        "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+        is_vc_inactive_error = any(
+            x in err_text.lower()
+            for x in ["group_call_not_modified", "no active group call", "group_call_invalid", "no group call", "group call is not active", "rpc_error"]
+        )
+
+        if is_vc_inactive_error:
+            vc_alert = {
+                "type": "rich_message",
+                "blocks": [
+                    {
+                        "type": "heading",
+                        "text": to_bold_sans("VOICE CHAT NOT ACTIVE"),
+                        "size": 1,
                     },
-                },
-                {
-                    "type": "paragraph",
-                    "text": (
-                        f"⚠️ {to_bold_sans('GROUP VOICE CHAT IS NOT STARTED')}\n\n"
-                        f"Assistant {asst_tag} is in this group, but the group Voice Chat is not active yet!\n\n"
-                        f"👉 {to_bold_sans('HOW TO START')}:\n"
-                        f"1. Tap the group profile / header at top.\n"
-                        f"2. Tap the 3-dots (⋮) -> tap {to_bold_sans('Start Video Chat / Voice Chat')}.\n"
-                        f"3. (Optional) Promote {asst_tag} to Admin with 'Manage Video Chats' permission.\n\n"
-                        f"Once Voice Chat is running in the group, send /play again to stream live! 🎵"
-                    ),
-                },
-                {
-                    "type": "buttons",
-                    "buttons": [
-                        {"text": "💬 " + to_small_caps("support"), "url": "https://t.me/wzzkaanu"},
-                    ],
-                },
-            ],
-        }
-        await bot_api_client.send_rich_message(chat_id, vc_alert)
+                    {
+                        "type": "photo",
+                        "photo": {
+                            "type": "photo",
+                            "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+                        },
+                    },
+                    {
+                        "type": "paragraph",
+                        "text": (
+                            f"⚠️ {to_bold_sans('GROUP VOICE CHAT IS NOT STARTED')}\n\n"
+                            f"Assistant {asst_tag} is in this group, but the group Voice Chat is not active yet!\n\n"
+                            f"👉 {to_bold_sans('HOW TO START')}:\n"
+                            f"1. Tap the group profile / header at top.\n"
+                            f"2. Tap the 3-dots (⋮) -> tap {to_bold_sans('Start Video Chat / Voice Chat')}.\n"
+                            f"3. (Optional) Promote {asst_tag} to Admin with 'Manage Video Chats' permission.\n\n"
+                            f"Once Voice Chat is running in the group, send /play again to stream live! 🎵"
+                        ),
+                    },
+                    {
+                        "type": "buttons",
+                        "buttons": [
+                            {"text": "💬 " + to_small_caps("support"), "url": "https://t.me/wzzkaanu"},
+                        ],
+                    },
+                ],
+            }
+            await bot_api_client.send_rich_message(chat_id, vc_alert)
+        else:
+            await bot_api_client.send_message(
+                chat_id,
+                f"❌ {to_bold_sans('PLAYBACK/EXTRACTION ERROR')}\n\n"
+                f"• {to_small_caps('song')}: {track.title}\n"
+                f"• {to_small_caps('reason')}: {err_text}\n\n"
+                f"👉 {to_bold_sans('tip')}: {to_small_caps('you can retry or search with another name!')}"
+            )
         return
 
     if is_now_playing and state.current_track:

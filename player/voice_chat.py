@@ -408,6 +408,7 @@ class VoiceChatAssistant:
         self.app: Optional[Any] = None
         self.pytgcalls: Optional[Any] = None
         self.active_chats: Dict[int, Any] = {}
+        self._resolved_peers: set = set()
         self.assistant_id: Optional[int] = None
         self.assistant_username: Optional[str] = None
         self.assistant_name: Optional[str] = None
@@ -541,7 +542,7 @@ class VoiceChatAssistant:
             )
             return False
 
-    async def play_audio(self, chat_id: int, audio_source: str) -> bool:
+    async def play_audio(self, chat_id: int, audio_source: str, seek_seconds: float = 0.0) -> bool:
         """Streams audio_source (URL or file) into the group voice chat call."""
         if self.pytgcalls and self.is_connected:
             try:
@@ -557,26 +558,33 @@ class VoiceChatAssistant:
 
                 # Fast peer verification & access hash caching before PyTgCalls call
                 peer_cached = False
-                try:
-                    await self.app.get_chat(chat_id)
+                if chat_id in self._resolved_peers:
                     peer_cached = True
-                except Exception as peer_err:
-                    logger.info("Voice Chat: get_chat(%s) note: %s. Attempting member lookup and dialog scan...", chat_id, str(peer_err))
-                    try:
-                        if self.assistant_id:
-                            await self.app.get_chat_member(chat_id, self.assistant_id)
-                            peer_cached = True
-                    except Exception:
-                        pass
 
-                    if not peer_cached:
+                if not peer_cached:
+                    try:
+                        await self.app.get_chat(chat_id)
+                        self._resolved_peers.add(chat_id)
+                        peer_cached = True
+                    except Exception as peer_err:
+                        logger.info("Voice Chat: get_chat(%s) note: %s. Attempting member lookup and dialog scan...", chat_id, str(peer_err))
                         try:
-                            async for dialog in self.app.get_dialogs(limit=10):
-                                if dialog.chat and dialog.chat.id == chat_id:
-                                    peer_cached = True
-                                    break
-                        except Exception as d_err:
-                            logger.debug("Voice Chat: get_dialogs scan note: %s", str(d_err))
+                            if self.assistant_id:
+                                await self.app.get_chat_member(chat_id, self.assistant_id)
+                                self._resolved_peers.add(chat_id)
+                                peer_cached = True
+                        except Exception:
+                            pass
+
+                        if not peer_cached:
+                            try:
+                                async for dialog in self.app.get_dialogs(limit=50):
+                                    if dialog.chat and dialog.chat.id == chat_id:
+                                        self._resolved_peers.add(chat_id)
+                                        peer_cached = True
+                                        break
+                            except Exception as d_err:
+                                logger.debug("Voice Chat: get_dialogs scan note: %s", str(d_err))
 
                 if not peer_cached:
                     try:
@@ -586,6 +594,7 @@ class VoiceChatAssistant:
                         if inv_link:
                             await self.app.join_chat(inv_link)
                             await self.app.get_chat(chat_id)
+                            self._resolved_peers.add(chat_id)
                             peer_cached = True
                     except Exception as inv_err:
                         logger.debug("Voice Chat: Invite link peer resolution note: %s", str(inv_err))
@@ -611,16 +620,25 @@ class VoiceChatAssistant:
                     raise RuntimeError(f"FFmpeg decoding test failed: {ffmpeg_log}")
 
                 # Construct stream with FFmpeg headers & reconnect flags so HTTP audio CDNs (JioSaavn / YouTube) don't send 403 or silence
-                ffmpeg_params = (
-                    '-headers "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n'
-                    'Referer: https://www.jiosaavn.com/\r\n" '
-                    '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-                )
+                ffmpeg_params = ""
+                if is_http:
+                    ffmpeg_params += (
+                        "-headers "
+                        "'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://www.jiosaavn.com/\r\n' "
+                        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+                    )
+                if seek_seconds > 0.0:
+                    if ffmpeg_params:
+                        ffmpeg_params += " "
+                    ffmpeg_params += f"-ss {seek_seconds}"
                 
                 def _build_stream(target_url: str):
                     is_remote = target_url.startswith(("http://", "https://"))
-                    # If local, we must NOT pass http specific parameters like headers or reconnect
-                    params = ffmpeg_params if is_remote else ""
+                    # If local, we must NOT pass http specific parameters like headers or reconnect unless seeking is active
+                    if is_remote:
+                        params = ffmpeg_params
+                    else:
+                        params = f"-ss {seek_seconds}" if seek_seconds > 0.0 else ""
                     
                     if MediaStream:
                         try:
