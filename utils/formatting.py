@@ -56,3 +56,15 @@ def render_progress(
 def format_queue_badge(count: int) -> str:
     """Formats the queue button label, e.g. '☷ Queue · 0' or '☷ Queue · 5'."""
     return f"☷ Queue · {max(0, count)}"
+
+
+def get_user_mention(user_id: int, name: str = "User", username: str | None = None) -> str:
+    """Returns a safe HTML user mention for Telegram messages."""
+    clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+    if username and str(username).strip():
+        u = str(username).strip().lstrip("@")
+        return f"@{u}"
+    if user_id and user_id > 0:
+        return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
+    return clean_name
+

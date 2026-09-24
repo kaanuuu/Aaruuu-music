@@ -8,7 +8,7 @@ Includes instant support redirect to @wzzkaanu.
 from typing import Any, Dict, List
 from player.models import PlayerState, Track
 from player.queue import TrackQueue
-from utils.formatting import format_time, render_progress
+from utils.formatting import format_time, get_user_mention, render_progress
 from utils.typography import to_bold_sans, to_small_caps
 
 SUPPORT_URL = "https://t.me/wzzkaanu"
@@ -17,11 +17,10 @@ SUPPORT_URL = "https://t.me/wzzkaanu"
 def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str, Any]:
     """
     Constructs the rich player message:
-    - Pure Unicode typography (no <b> or <code> punchmarks)
-    - Full track details: title, artist, duration, requester
+    - Pure Unicode typography
+    - Full track details: title, artist, duration, user mention
     - Visual progress bar
-    - Sleek buttons with small-caps labels
-    - Direct support button redirecting to @wzzkaanu
+    - Immediate control buttons: Prev, Play/Pause, Skip, Queue, Replay, Shuffle, Loop, Autoplay, Support, Close
     """
     track: Track = state.current_track or Track(
         track_id="none",
@@ -37,7 +36,10 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
     session = state.session_id
     curr_pos = state.current_position
     progress_line = render_progress(curr_pos, track.duration)
-    requester_label = state.requested_by.get("name") or track.requester_name or "User"
+    
+    req_id = state.requested_by.get("id") or track.requester_user_id
+    req_name = state.requested_by.get("name") or track.requester_name or "User"
+    requester_label = get_user_mention(req_id, req_name)
 
     # Play/Pause toggle button
     if state.is_paused:
@@ -55,12 +57,12 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
         }
         status_badge = "▶ " + to_small_caps("playing")
 
-    # Row 1: Replay | Pause/Resume | Skip
+    # Row 1: Prev | Pause/Resume | Skip
     row_1_buttons = [
         {
-            "text": "↺ ʀᴇᴘʟᴀʏ",
+            "text": "⏮ ᴘʀᴇᴠ",
             "style": "primary",
-            "callback_data": f"player:replay:{session}",
+            "callback_data": f"player:prev:{session}",
         },
         play_pause_button,
         {
@@ -70,7 +72,7 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
         },
     ]
 
-    # Row 2: Queue count badge and Shuffle
+    # Row 2: Queue count | Replay | Shuffle
     queue_count = len(queue)
     queue_label = f"☷ ǫᴜᴇᴜᴇ ({queue_count})"
     row_2_buttons = [
@@ -80,14 +82,35 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
             "callback_data": f"player:queue:{session}",
         },
         {
+            "text": "↺ ʀᴇᴘʟᴀʏ",
+            "style": "primary",
+            "callback_data": f"player:replay:{session}",
+        },
+        {
             "text": "🔀 sʜᴜғғʟᴇ",
             "style": "primary",
             "callback_data": f"player:shuffle:{session}",
         },
     ]
 
-    # Row 3: Support (@wzzkaanu) and Close
+    # Row 3: Loop mode & Autoplay toggle
+    loop_str = state.loop_mode.upper()
+    ap_str = "ON" if state.autoplay else "OFF"
     row_3_buttons = [
+        {
+            "text": f"🔁 ʟᴏᴏᴘ: {loop_str}",
+            "style": "primary",
+            "callback_data": f"player:loop:{session}",
+        },
+        {
+            "text": f"📻 ᴀᴜᴛᴏᴘʟᴀʏ: {ap_str}",
+            "style": "primary",
+            "callback_data": f"player:autoplay:{session}",
+        },
+    ]
+
+    # Row 4: Support (@wzzkaanu) and Close
+    row_4_buttons = [
         {
             "text": "💬 sᴜᴘᴘᴏʀᴛ",
             "url": SUPPORT_URL,
@@ -105,7 +128,7 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
         f"🎵 {to_small_caps('title')}: {track.title}\n"
         f"👤 {to_small_caps('artist')}: {track.artist}\n"
         f"⏱ {to_small_caps('duration')}: {format_time(track.duration)}\n"
-        f"🙋 {to_small_caps('requested by')}: @{requester_label}\n\n"
+        f"🙋 {to_small_caps('requested by')}: {requester_label}\n\n"
         f"{progress_line}\n"
         f"⏱ {time_str}"
     )
@@ -142,12 +165,18 @@ def build_player_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str
             "buttons": row_3_buttons,
             "align": "center",
         },
+        {
+            "type": "buttons",
+            "buttons": row_4_buttons,
+            "align": "center",
+        },
     ]
 
     return {
         "blocks": blocks,
         "type": "rich_message",
     }
+
 
 
 def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str, Any]:

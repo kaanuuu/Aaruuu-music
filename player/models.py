@@ -54,6 +54,7 @@ class PlayerState:
         self.chat_id: int = chat_id
         self.session_id: str = self._generate_session_id()
         self.current_track: Optional[Track] = None
+        self.history: List[Track] = []
         self.is_playing: bool = False
         self.is_paused: bool = False
         self.started_at: float = 0.0
@@ -63,6 +64,7 @@ class PlayerState:
         self.player_message_chat_id: Optional[int] = chat_id
         self.requested_by: Dict[str, Any] = {}
         self.loop_mode: str = "off"  # "off", "track", "queue"
+        self.autoplay: bool = True  # Autoplay enabled by default when queue ends
         self.volume: int = 100
 
     @staticmethod
@@ -97,16 +99,40 @@ class PlayerState:
             return min(pos, float(self.duration))
         return pos
 
-    def play(self, track: Track, requester: Dict[str, Any]) -> str:
+    def play(self, track: Track, requester: Dict[str, Any], push_history: bool = True) -> str:
         """Transitions state to playing a new track, generating a fresh session."""
+        if push_history and self.current_track:
+            # Maintain history stack up to 20 previous tracks
+            self.history.append(self.current_track)
+            if len(self.history) > 20:
+                self.history.pop(0)
+
         self.current_track = track
         self.requested_by = requester
         self.is_playing = True
-        self.is_paused = False
+        self.is_paused = False  # NEVER remain paused when starting a new track!
         self.started_at = time.time()
         self.paused_at = None
         self.pause_duration_offset = 0.0
         return self.new_session()
+
+    def pop_previous_track(self) -> Optional[Track]:
+        """Pops and returns the most recent track from playback history."""
+        if self.history:
+            return self.history.pop()
+        return None
+
+    def toggle_loop_mode(self) -> str:
+        """Cycles loop mode: off -> track -> queue -> off."""
+        modes = ["off", "track", "queue"]
+        idx = modes.index(self.loop_mode) if self.loop_mode in modes else 0
+        self.loop_mode = modes[(idx + 1) % len(modes)]
+        return self.loop_mode
+
+    def toggle_autoplay(self) -> bool:
+        """Toggles autoplay on/off."""
+        self.autoplay = not self.autoplay
+        return self.autoplay
 
     def pause(self) -> bool:
         """Pauses the active playback."""
@@ -127,12 +153,12 @@ class PlayerState:
         return True
 
     def replay(self) -> None:
-        """Resets playback to 0:00."""
+        """Resets playback to 0:00 and forces unpaused playback."""
         if self.current_track:
             self.started_at = time.time()
             self.pause_duration_offset = 0.0
-            if self.is_paused:
-                self.paused_at = self.started_at
+            self.is_paused = False
+            self.paused_at = None
 
     def seek(self, target_seconds: float) -> float:
         """Seeks to a specific position in seconds."""
@@ -155,3 +181,4 @@ class PlayerState:
         self.paused_at = None
         self.pause_duration_offset = 0.0
         self.new_session()
+

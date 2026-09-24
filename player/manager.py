@@ -113,6 +113,124 @@ class PlayerManager:
                 await voice_assistant.play_audio(chat_id, state.current_track.playable_source)
             return True, "Replaying current track."
 
+    async def previous(
+        self, chat_id: int, session_id: Optional[str] = None
+    ) -> Tuple[Optional[Track], str]:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            state = self._states.get(chat_id)
+            if not state:
+                return None, "This player is no longer active."
+            if session_id and state.session_id != session_id:
+                return None, "This player is no longer active."
+
+            prev_track = state.pop_previous_track()
+            if prev_track:
+                state.play(
+                    prev_track,
+                    {"id": prev_track.requester_user_id, "name": prev_track.requester_name},
+                    push_history=False,
+                )
+                await voice_assistant.play_audio(chat_id, prev_track.playable_source)
+                return prev_track, f"Playing previous track: {prev_track.title}"
+            return None, "No previous track in playback history."
+
+    async def auto_advance(self, chat_id: int) -> Tuple[Optional[Track], str]:
+        """Automatically transitions to next track when song finishes or skip is triggered."""
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            state = self._states.get(chat_id)
+            queue = self._queues.get(chat_id) or TrackQueue()
+            if not state or not state.is_playing:
+                return None, "Player inactive."
+
+            old_track = state.current_track
+
+            # Loop mode handling
+            if old_track and state.loop_mode == "track":
+                state.play(old_track, state.requested_by)
+                await voice_assistant.play_audio(chat_id, old_track.playable_source)
+                return old_track, f"Looping track: {old_track.title}"
+            elif old_track and state.loop_mode == "queue":
+                queue.add(old_track)
+
+            next_track = queue.pop()
+            if next_track:
+                state.play(next_track, {"id": next_track.requester_user_id, "name": next_track.requester_name})
+                await voice_assistant.play_audio(chat_id, next_track.playable_source)
+                return next_track, f"Now playing: {next_track.title}"
+
+            # Queue empty -> Check Autoplay
+            if state.autoplay and old_track:
+                from player.extractor import MediaExtractor
+                extractor = MediaExtractor()
+                loop = asyncio.get_running_loop()
+                auto_track = await loop.run_in_executor(None, extractor.extract_related_track, old_track)
+                if auto_track:
+                    state.play(auto_track, {"id": 0, "name": "Autoplay 📻"})
+                    await voice_assistant.play_audio(chat_id, auto_track.playable_source)
+                    return auto_track, f"Autoplay: {auto_track.title}"
+
+            state.stop()
+            await voice_assistant.stop_audio(chat_id)
+            return None, "Queue is empty. Playback ended."
+
+    async def toggle_loop_mode(
+        self, chat_id: int, session_id: Optional[str] = None
+    ) -> Tuple[str, str]:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            state = self._states.get(chat_id)
+            if not state:
+                return "off", "Player inactive."
+            if session_id and state.session_id != session_id:
+                return state.loop_mode, "Player inactive."
+            mode = state.toggle_loop_mode()
+            return mode, f"Loop mode set to: {mode.upper()}"
+
+    async def set_loop_mode(self, chat_id: int, mode: str) -> Tuple[bool, str]:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            state = self._states.get(chat_id)
+            if not state:
+                return False, "Player inactive."
+            if mode in ("off", "track", "queue"):
+                state.loop_mode = mode
+                return True, f"Loop mode set to: {mode.upper()}"
+            return False, "Invalid loop mode."
+
+    async def toggle_autoplay(
+        self, chat_id: int, session_id: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            state = self._states.get(chat_id)
+            if not state:
+                return False, "Player inactive."
+            if session_id and state.session_id != session_id:
+                return state.autoplay, "Player inactive."
+            ap = state.toggle_autoplay()
+            return ap, f"Autoplay is now {'ENABLED' if ap else 'DISABLED'}"
+
+    async def seek(self, chat_id: int, seconds: int) -> Tuple[bool, str]:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            state = self._states.get(chat_id)
+            if not state or not state.current_track:
+                return False, "No active playback to seek."
+            pos = state.seek(float(seconds))
+            return True, f"Seeked to {int(pos)}s."
+
+    async def set_volume(self, chat_id: int, volume: int) -> Tuple[bool, str]:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            state = self._states.get(chat_id)
+            if not state:
+                return False, "Player inactive."
+            state.volume = max(1, min(100, volume))
+            return True, f"Volume set to {state.volume}%"
+
+
     async def skip(
         self, chat_id: int, session_id: Optional[str] = None
     ) -> Tuple[Optional[Track], str]:

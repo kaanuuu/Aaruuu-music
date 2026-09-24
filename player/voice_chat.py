@@ -420,6 +420,21 @@ class VoiceChatAssistant:
 
             try:
                 self.pytgcalls = PyTgCalls(self.app)
+
+                if hasattr(self.pytgcalls, "on_stream_end"):
+                    @self.pytgcalls.on_stream_end()
+                    async def _stream_end_handler(client, update):
+                        try:
+                            chat_id = getattr(update, "chat_id", None)
+                            if not chat_id and hasattr(update, "call"):
+                                chat_id = getattr(update.call, "chat_id", None)
+                            if chat_id:
+                                logger.info("Voice Chat: Stream ended in chat %s. Auto-advancing...", chat_id)
+                                from player.manager import player_manager
+                                await player_manager.auto_advance(chat_id)
+                        except Exception as se_err:
+                            logger.debug("Voice Chat stream end handler note: %s", str(se_err))
+
                 await self.pytgcalls.start()
                 logger.info("Voice Chat: PyTgCalls VC assistant connected successfully!")
             except Exception as vc_err:

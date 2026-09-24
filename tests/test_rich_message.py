@@ -54,18 +54,24 @@ class TestRichMessages(unittest.TestCase):
 
         # 4. Buttons blocks
         button_blocks = [b for b in blocks if b.get("type") == "buttons"]
-        self.assertEqual(len(button_blocks), 3)
+        self.assertEqual(len(button_blocks), 4)
 
-        # Row 1 buttons: Replay, Pause, Skip
+        # Row 1 buttons: Prev, Pause, Skip
         row1 = button_blocks[0]["buttons"]
         self.assertEqual(len(row1), 3)
-        self.assertIn("ʀᴇᴘʟᴀʏ", row1[0]["text"])
+        self.assertIn("ᴘʀᴇᴠ", row1[0]["text"])
         self.assertIn("ᴘᴀᴜsᴇ", row1[1]["text"])
         self.assertIn("sᴋɪᴘ", row1[2]["text"])
 
-        # Row 3 buttons: Support and Close
+        # Row 3 buttons: Loop, Autoplay
         row3 = button_blocks[2]["buttons"]
-        support_btn = row3[0]
+        self.assertEqual(len(row3), 2)
+        self.assertIn("ʟᴏᴏᴘ", row3[0]["text"])
+        self.assertIn("ᴀᴜᴛᴏᴘʟᴀʏ", row3[1]["text"])
+
+        # Row 4 buttons: Support and Close
+        row4 = button_blocks[3]["buttons"]
+        support_btn = row4[0]
         self.assertEqual(support_btn["url"], "https://t.me/wzzkaanu")
         self.assertIn("sᴜᴘᴘᴏʀᴛ", support_btn["text"])
 

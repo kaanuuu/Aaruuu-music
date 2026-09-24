@@ -48,6 +48,7 @@ class MediaExtractor:
     """
 
     def __init__(self):
+        self._cache: Dict[str, Tuple[float, Any]] = {}
         self.cookies_path = os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES")
         # Support inline Netscape cookies passed via environment variable (YTDLP_COOKIES_TEXT or COOKIES)
         cookies_text = os.getenv("YTDLP_COOKIES_TEXT") or os.getenv("COOKIES_TEXT")
@@ -64,6 +65,36 @@ class MediaExtractor:
                 logger.info("Extractor: Loaded inline YouTube cookies into /tmp/cookies.txt")
             except Exception as e:
                 logger.warning("Extractor: Could not write inline cookies: %s", str(e))
+
+    def _get_from_cache(self, key: str) -> Optional[Any]:
+        if key in self._cache:
+            ts, val = self._cache[key]
+            if time.time() - ts < 1800:  # 30 min cache TTL
+                return val
+            del self._cache[key]
+        return None
+
+    def _set_cache(self, key: str, val: Any) -> None:
+        if len(self._cache) > 200:
+            self._cache.clear()
+        self._cache[key] = (time.time(), val)
+
+    def extract_related_track(self, current_track: Track) -> Optional[Track]:
+        """Fetches a related audio track for autoplay mode when queue ends."""
+        if not current_track:
+            return None
+        query = f"{current_track.artist} best songs" if (current_track.artist and current_track.artist != "YouTube Music") else f"{current_track.title} song"
+        try:
+            tracks = self._search_youtube_ytinitialdata(query, limit=5, requester_id=0, requester_name="Autoplay 📻")
+            for tr in tracks:
+                if tr.title.lower().strip() != current_track.title.lower().strip():
+                    return tr
+            if tracks:
+                return tracks[0]
+        except Exception as e:
+            logger.debug("Autoplay related track search note: %s", str(e))
+        return None
+
 
     def _get_ydl_opts(self) -> Dict[str, Any]:
         opts: Dict[str, Any] = {

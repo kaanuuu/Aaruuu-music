@@ -119,6 +119,39 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         rich_msg = build_player_rich_message(state, queue)
         await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
+    elif action == "prev":
+        if not await is_chat_admin(chat_id, user_id):
+            await bot_api_client.answer_callback_query(
+                cq_id, "Only chat admins can change tracks.", show_alert=True
+            )
+            return
+        prev_track, msg = await player_manager.previous(chat_id, session_id)
+        await bot_api_client.answer_callback_query(cq_id, msg)
+        rich_msg = build_player_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+
+    elif action == "loop":
+        if not await is_chat_admin(chat_id, user_id):
+            await bot_api_client.answer_callback_query(
+                cq_id, "Only chat admins can change loop mode.", show_alert=True
+            )
+            return
+        mode, msg = await player_manager.toggle_loop_mode(chat_id, session_id)
+        await bot_api_client.answer_callback_query(cq_id, msg)
+        rich_msg = build_player_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+
+    elif action == "autoplay":
+        if not await is_chat_admin(chat_id, user_id):
+            await bot_api_client.answer_callback_query(
+                cq_id, "Only chat admins can toggle autoplay.", show_alert=True
+            )
+            return
+        ap, msg = await player_manager.toggle_autoplay(chat_id, session_id)
+        await bot_api_client.answer_callback_query(cq_id, msg)
+        rich_msg = build_player_rich_message(state, queue)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
+
     elif action == "nowplaying":
         await bot_api_client.answer_callback_query(cq_id)
         rich_msg = build_player_rich_message(state, queue)

@@ -416,11 +416,10 @@ async def run_bot():
 
     await voice_assistant.start()
 
-    # Register Bot commands with BotFather API (Commands menu pops up on '/')
+    # Register Bot commands with BotFather API with scoped visibility
     try:
-        cmd_res = await bot_api_client.set_my_commands(COMMANDS_REGISTRY)
-        if cmd_res.get("ok"):
-            logger.info("Bot commands successfully registered with Telegram.")
+        await bot_api_client.set_command_scopes(COMMANDS_REGISTRY)
+        logger.info("Bot commands and scopes successfully registered with Telegram.")
     except Exception as e:
         logger.warning("Could not register bot commands: %s", str(e))
 

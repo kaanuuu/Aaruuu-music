@@ -399,5 +399,49 @@ class TelegramAPIClient:
         inline_kb = {"inline_keyboard": rows} if rows else None
         return full_text, thumbnail, inline_kb
 
+    async def set_command_scopes(self, public_commands: List[Dict[str, str]]) -> None:
+        """Registers Telegram Bot API command menus with scoped visibility (default, groups, admins, private)."""
+        try:
+            # 1. Default commands
+            await self.bot_api("setMyCommands", {
+                "commands": public_commands,
+                "scope": {"type": "default"},
+            })
+
+            # 2. Group chats scope
+            group_cmds = [
+                c for c in public_commands
+                if c["command"] in ("play", "search", "song", "nowplaying", "queue", "vc", "ping", "help")
+            ]
+            await self.bot_api("setMyCommands", {
+                "commands": group_cmds,
+                "scope": {"type": "all_group_chats"},
+            })
+
+            # 3. Group Chat Administrators scope
+            admin_cmds = [
+                c for c in public_commands
+                if c["command"] in ("play", "pause", "resume", "replay", "skip", "stop", "clear", "loop", "seek", "volume", "shuffle", "queue", "nowplaying", "settings", "vc")
+            ]
+            await self.bot_api("setMyCommands", {
+                "commands": admin_cmds,
+                "scope": {"type": "all_chat_administrators"},
+            })
+
+            # 4. Private chats scope
+            private_cmds = [
+                c for c in public_commands
+                if c["command"] in ("start", "help", "play", "search", "song", "settings", "ping")
+            ]
+            await self.bot_api("setMyCommands", {
+                "commands": private_cmds,
+                "scope": {"type": "all_private_chats"},
+            })
+
+            logger.info("Bot API: Scoped command menus set successfully.")
+        except Exception as e:
+            logger.debug("Bot API setMyCommands note: %s", str(e))
+
 
 bot_api_client = TelegramAPIClient()
+
