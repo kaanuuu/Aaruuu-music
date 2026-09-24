@@ -20,6 +20,14 @@ class PlayerManager:
         self._locks: Dict[int, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
 
+    async def _download_track(self, track: Track) -> None:
+        try:
+            from player.extractor import MediaExtractor
+            extractor = MediaExtractor()
+            await extractor.download_track(track)
+        except Exception as e:
+            logger.warning("Could not download track inline in player manager: %s", str(e))
+
     async def _get_lock(self, chat_id: int) -> asyncio.Lock:
         async with self._global_lock:
             if chat_id not in self._locks:
@@ -60,6 +68,7 @@ class PlayerManager:
 
             if not state.is_playing:
                 state.play(track, requester)
+                await self._download_track(track)
                 stream_ok = await voice_assistant.play_audio(chat_id, track.playable_source)
                 if not stream_ok:
                     state.stop()
@@ -110,6 +119,7 @@ class PlayerManager:
                 return False, "This player is no longer active."
             state.replay()
             if state.current_track:
+                await self._download_track(state.current_track)
                 await voice_assistant.play_audio(chat_id, state.current_track.playable_source)
             return True, "Replaying current track."
 
@@ -131,6 +141,7 @@ class PlayerManager:
                     {"id": prev_track.requester_user_id, "name": prev_track.requester_name},
                     push_history=False,
                 )
+                await self._download_track(prev_track)
                 await voice_assistant.play_audio(chat_id, prev_track.playable_source)
                 return prev_track, f"Playing previous track: {prev_track.title}"
             return None, "No previous track in playback history."
@@ -149,6 +160,7 @@ class PlayerManager:
             # Loop mode handling
             if old_track and state.loop_mode == "track":
                 state.play(old_track, state.requested_by)
+                await self._download_track(old_track)
                 await voice_assistant.play_audio(chat_id, old_track.playable_source)
                 return old_track, f"Looping track: {old_track.title}"
             elif old_track and state.loop_mode == "queue":
@@ -157,6 +169,7 @@ class PlayerManager:
             next_track = queue.pop()
             if next_track:
                 state.play(next_track, {"id": next_track.requester_user_id, "name": next_track.requester_name})
+                await self._download_track(next_track)
                 await voice_assistant.play_audio(chat_id, next_track.playable_source)
                 return next_track, f"Now playing: {next_track.title}"
 
@@ -168,6 +181,7 @@ class PlayerManager:
                 auto_track = await loop.run_in_executor(None, extractor.extract_related_track, old_track)
                 if auto_track:
                     state.play(auto_track, {"id": 0, "name": "Autoplay 📻"})
+                    await self._download_track(auto_track)
                     await voice_assistant.play_audio(chat_id, auto_track.playable_source)
                     return auto_track, f"Autoplay: {auto_track.title}"
 
@@ -253,6 +267,7 @@ class PlayerManager:
             # Handle loop mode
             if old_track and state.loop_mode == "track":
                 state.play(old_track, state.requested_by)
+                await self._download_track(old_track)
                 await voice_assistant.play_audio(chat_id, old_track.playable_source)
                 return old_track, f"Looping track: {old_track.title}"
             elif old_track and state.loop_mode == "queue":
@@ -261,6 +276,7 @@ class PlayerManager:
             next_track = queue.pop()
             if next_track:
                 state.play(next_track, {"user_id": next_track.requester_user_id, "name": next_track.requester_name})
+                await self._download_track(next_track)
                 await voice_assistant.play_audio(chat_id, next_track.playable_source)
                 return next_track, f"Skipped to: {next_track.title}"
             else:

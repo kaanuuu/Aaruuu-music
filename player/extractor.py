@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -651,3 +652,100 @@ class MediaExtractor:
         if tracks:
             return tracks[0]
         return None
+
+    def _download_direct_url(self, url: str, dest_path: str) -> bool:
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.jiosaavn.com/",
+            }
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as response, open(dest_path, "wb") as out_file:
+                while True:
+                    chunk = response.read(64 * 1024)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+            return True
+        except Exception as e:
+            logger.warning("Direct download failed for %s: %s", url, str(e))
+            return False
+
+    def _download_ytdlp(self, url_or_query: str, dest_path: str) -> bool:
+        try:
+            import yt_dlp
+            opts = {
+                "format": "bestaudio/best",
+                "outtmpl": dest_path,
+                "quiet": True,
+                "no_warnings": True,
+                "nocheckcertificate": True,
+                "logger": YtDlpQuietLogger(),
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["ios", "tv_embedded", "web_embedded", "mweb"],
+                        "player_skip": ["webpage", "configs"],
+                    }
+                },
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            }
+            if self.cookies_path and os.path.exists(self.cookies_path):
+                opts["cookiefile"] = self.cookies_path
+
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url_or_query])
+            return True
+        except Exception as e:
+            logger.warning("yt-dlp download failed for %s: %s", url_or_query, str(e))
+            return False
+
+    async def download_track(self, track: Track) -> bool:
+        """
+        Downloads a track's audio stream to a local cache file for resilient zero-jitter playback.
+        Returns True if successfully downloaded or already cached.
+        """
+        if not track:
+            return False
+
+        # If already cached and valid, reuse it immediately
+        if track.local_filepath and os.path.exists(track.local_filepath) and os.path.getsize(track.local_filepath) > 0:
+            return True
+
+        cache_dir = "/tmp/aaruu_cache"
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir, exist_ok=True)
+
+        local_path = os.path.join(cache_dir, f"{track.track_id}.mp3")
+
+        # Check if file already exists in cache (e.g. from a previous playback)
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            track.local_filepath = local_path
+            return True
+
+        # Determine download source
+        source = track.stream_url or track.source_url
+        if not source:
+            return False
+
+        logger.info("Extractor: Downloading track '%s' (ID: %s)...", track.title, track.track_id)
+        loop = asyncio.get_running_loop()
+
+        success = False
+        # If it's a direct mp3/m4a from JioSaavn/SoundCloud, use lightweight direct HTTP chunked downloader
+        if "saavncdn" in source or "sndcdn" in source or source.endswith((".mp3", ".m4a", ".aac")):
+            success = await loop.run_in_executor(None, self._download_direct_url, source, local_path)
+
+        # Fallback to yt-dlp if direct download fails or if it's a YouTube source
+        if not success:
+            success = await loop.run_in_executor(None, self._download_ytdlp, track.source_url, local_path)
+
+        if success and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            track.local_filepath = local_path
+            logger.info("Extractor: Successfully downloaded track '%s' (size: %s bytes)", track.title, os.path.getsize(local_path))
+            return True
+
+        logger.warning("Extractor: Failed to download track '%s'", track.title)
+        return False

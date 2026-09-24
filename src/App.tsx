@@ -6,9 +6,12 @@ import {
   Play,
   Pause,
   SkipForward,
+  SkipBack,
   RotateCcw,
   ListMusic,
   Shuffle,
+  Repeat,
+  MessageCircle,
   X,
   ShieldCheck,
   CheckCircle2,
@@ -114,13 +117,13 @@ export default function App() {
 
             {/* Native Rich Message Compact Rounded Buttons */}
             <div className="space-y-2 pt-2 flex flex-col items-center">
-              {/* Row 1: Compact, Rounded-xl, Centered */}
+              {/* Row 1: Prev | Pause | Skip */}
               <div className="flex items-center justify-center gap-2 w-full">
                 <button
                   type="button"
                   className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-500/30 text-xs py-1.5 px-3 rounded-xl font-medium flex items-center justify-center gap-1.5 transition shadow-sm"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" /> Replay
+                  <SkipBack className="w-3.5 h-3.5" /> Prev
                 </button>
                 <button
                   type="button"
@@ -136,7 +139,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Row 2: Compact, Rounded-xl, Centered (Not stretched across whole message) */}
+              {/* Row 2: Queue | Replay | Shuffle */}
               <div className="flex items-center justify-center gap-2 w-full">
                 <button
                   type="button"
@@ -148,7 +151,39 @@ export default function App() {
                   type="button"
                   className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-500/30 text-xs py-1.5 px-3 rounded-xl font-medium flex items-center justify-center gap-1.5 transition shadow-sm"
                 >
+                  <RotateCcw className="w-3.5 h-3.5" /> Replay
+                </button>
+                <button
+                  type="button"
+                  className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-500/30 text-xs py-1.5 px-3 rounded-xl font-medium flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
                   <Shuffle className="w-3.5 h-3.5" /> Shuffle
+                </button>
+              </div>
+
+              {/* Row 3: Loop | Autoplay */}
+              <div className="flex items-center justify-center gap-2 w-full">
+                <button
+                  type="button"
+                  className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-500/30 text-xs py-1.5 px-3 rounded-xl font-medium flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
+                  <Repeat className="w-3.5 h-3.5" /> Loop: OFF
+                </button>
+                <button
+                  type="button"
+                  className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-500/30 text-xs py-1.5 px-3 rounded-xl font-medium flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
+                  <Radio className="w-3.5 h-3.5" /> Autoplay: ON
+                </button>
+              </div>
+
+              {/* Row 4: Support | Close */}
+              <div className="flex items-center justify-center gap-2 w-full">
+                <button
+                  type="button"
+                  className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-500/30 text-xs py-1.5 px-3 rounded-xl font-medium flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" /> Support
                 </button>
                 <button
                   type="button"

@@ -273,9 +273,24 @@ async def _play_track_direct(message: Dict[str, Any], track: Any, user_id: int, 
                     )
                     return
 
+    # Check if player is currently inactive and send immediate download status feedback
+    state = await player_manager.get_state(chat_id)
+    status_id = None
+    if not state.is_playing:
+        status = await bot_api_client.send_message(
+            chat_id, f"⬇️ {to_small_caps('downloading & buffering')}: {track.title}..."
+        )
+        status_id = status.get("result", {}).get("message_id")
+
     is_now_playing, state, queue = await player_manager.play_or_queue(
         chat_id, track, {"id": user_id, "name": username}
     )
+
+    if status_id:
+        try:
+            await bot_api_client.delete_message(chat_id, status_id)
+        except Exception:
+            pass
 
     if voice_assistant.last_error and not state.is_playing and not is_now_playing:
         err_text = voice_assistant.last_error

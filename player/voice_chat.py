@@ -507,7 +507,7 @@ class VoiceChatAssistant:
 
                     if not peer_cached:
                         try:
-                            async for dialog in self.app.get_dialogs():
+                            async for dialog in self.app.get_dialogs(limit=10):
                                 if dialog.chat and dialog.chat.id == chat_id:
                                     peer_cached = True
                                     break

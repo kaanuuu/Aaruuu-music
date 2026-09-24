@@ -22,11 +22,19 @@ class Track:
     requester_user_id: int
     requester_name: str
     stream_url: Optional[str] = None
+    local_filepath: Optional[str] = None
     created_at: float = field(default_factory=time.time)
 
     @property
     def playable_source(self) -> str:
-        """Returns direct audio stream URL if resolved, else source_url."""
+        """Returns local file path if downloaded and exists, else stream_url, else source_url."""
+        import os
+        if hasattr(self, "local_filepath") and self.local_filepath and os.path.exists(self.local_filepath):
+            try:
+                if os.path.getsize(self.local_filepath) > 0:
+                    return self.local_filepath
+            except Exception:
+                pass
         return self.stream_url or self.source_url
 
     def to_dict(self) -> Dict[str, Any]:
@@ -38,6 +46,7 @@ class Track:
             "thumbnail": self.thumbnail,
             "source_url": self.source_url,
             "stream_url": self.stream_url,
+            "local_filepath": getattr(self, "local_filepath", None),
             "requester_user_id": self.requester_user_id,
             "requester_name": self.requester_name,
             "created_at": self.created_at,
