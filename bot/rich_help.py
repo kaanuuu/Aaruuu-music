@@ -123,41 +123,41 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
 
     if active_section in ("home", "closed"):
         row_0 = [
-            {"text": "📜 " + to_small_caps("all user commands"), "style": "primary", "callback_data": "help:all_commands"},
+            {"text": "≡ " + to_small_caps("all user commands"), "style": "primary", "callback_data": "help:all_commands"},
         ]
         row_1 = [
-            {"text": "🚀 " + to_small_caps("getting started"), "style": "primary", "callback_data": "help:getting_started"},
-            {"text": "🔍 " + to_small_caps("find & play"), "style": "primary", "callback_data": "help:find_play"},
+            {"text": "› " + to_small_caps("getting started"), "style": "primary", "callback_data": "help:getting_started"},
+            {"text": "› " + to_small_caps("find & play"), "style": "primary", "callback_data": "help:find_play"},
         ]
         row_2 = [
-            {"text": "🎛 " + to_small_caps("controls"), "style": "primary", "callback_data": "help:controls"},
-            {"text": "📋 " + to_small_caps("queue & repeat"), "style": "primary", "callback_data": "help:queue_repeat"},
+            {"text": "› " + to_small_caps("controls"), "style": "primary", "callback_data": "help:controls"},
+            {"text": "› " + to_small_caps("queue & repeat"), "style": "primary", "callback_data": "help:queue_repeat"},
         ]
         row_3 = [
-            {"text": "⚙️ " + to_small_caps("group settings"), "style": "primary", "callback_data": "help:group_settings"},
-            {"text": "🛡 " + to_small_caps("group admins"), "style": "primary", "callback_data": "help:group_admins"},
+            {"text": "› " + to_small_caps("group settings"), "style": "primary", "callback_data": "help:group_settings"},
+            {"text": "› " + to_small_caps("group admins"), "style": "primary", "callback_data": "help:group_admins"},
         ]
         row_4 = [
-            {"text": "🛠 " + to_small_caps("troubleshooting"), "style": "primary", "callback_data": "help:troubleshooting"},
+            {"text": "› " + to_small_caps("troubleshooting"), "style": "primary", "callback_data": "help:troubleshooting"},
         ]
         if is_owner:
-            row_4.append({"text": "👑 " + to_small_caps("owner & sudo"), "style": "primary", "callback_data": "help:owner_sudo"})
+            row_4.append({"text": "› " + to_small_caps("owner & sudo"), "style": "primary", "callback_data": "help:owner_sudo"})
 
-        close_btn_text = "✔ " + to_small_caps("closed") if is_closed else "✖ " + to_small_caps("close")
+        close_btn_text = "■ " + to_small_caps("closed") if is_closed else "■ " + to_small_caps("close")
         close_btn_cb = "help:home" if is_closed else "help:close"
         row_5 = [
-            {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
+            {"text": "≡ " + to_small_caps("support"), "url": SUPPORT_URL},
             {"text": close_btn_text, "style": "link", "callback_data": close_btn_cb},
         ]
         button_rows = [row_0, row_1, row_2, row_3, row_4, row_5]
     else:
         # Inside a specific sub-guide: provide clean back navigation without dumping all old buttons
         row_back = [
-            {"text": "◀ " + to_small_caps("back to guide menu"), "style": "primary", "callback_data": "help:home"},
-            {"text": "💬 " + to_small_caps("support"), "url": SUPPORT_URL},
+            {"text": "‹ " + to_small_caps("back to guide menu"), "style": "primary", "callback_data": "help:home"},
+            {"text": "≡ " + to_small_caps("support"), "url": SUPPORT_URL},
         ]
         row_close = [
-            {"text": "✖ " + to_small_caps("close guide"), "style": "link", "callback_data": "help:close"},
+            {"text": "■ " + to_small_caps("close guide"), "style": "link", "callback_data": "help:close"},
         ]
         button_rows = [row_back, row_close]
 

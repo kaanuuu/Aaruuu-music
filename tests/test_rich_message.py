@@ -52,21 +52,21 @@ class TestRichMessages(unittest.TestCase):
         self.assertIn("3:06", details_paragraph["text"])
         self.assertIn("●", details_paragraph["text"])
 
-        # 4. Buttons blocks: Row 1 [ Queue ] [ || Pause ] [ ↻ Replay ] and Row 2 [ « Skip ]
+        # 4. Buttons blocks: Row 1 [ ≡ Queue ] [ ⏸ Pause ] [ ↻ Replay ] and Row 2 [ » Skip ]
         button_blocks = [b for b in blocks if b.get("type") == "buttons"]
         self.assertEqual(len(button_blocks), 2)
 
-        # Row 1 buttons: Queue, || Pause, ↻ Replay
+        # Row 1 buttons: ≡ Queue, ⏸ Pause, ↻ Replay
         row1 = button_blocks[0]["buttons"]
         self.assertEqual(len(row1), 3)
-        self.assertEqual(row1[0]["text"], "Queue")
-        self.assertEqual(row1[1]["text"], "|| Pause")
+        self.assertEqual(row1[0]["text"], "≡ Queue")
+        self.assertEqual(row1[1]["text"], "⏸ Pause")
         self.assertEqual(row1[2]["text"], "↻ Replay")
 
-        # Row 2 buttons: « Skip
+        # Row 2 buttons: » Skip
         row2 = button_blocks[1]["buttons"]
         self.assertEqual(len(row2), 1)
-        self.assertEqual(row2[0]["text"], "« Skip")
+        self.assertEqual(row2[0]["text"], "» Skip")
 
     def test_build_player_paused_toggle(self):
         self.state.play(self.track, {"name": "john_doe", "id": 12345})
@@ -75,8 +75,8 @@ class TestRichMessages(unittest.TestCase):
         button_blocks = [b for b in rich_msg["blocks"] if b.get("type") == "buttons"]
         row1 = button_blocks[0]["buttons"]
 
-        # Middle button should now be Resume (> Resume) with success style
-        self.assertEqual(row1[1]["text"], "> Resume")
+        # Middle button should now be Resume (▶ Play) with success style
+        self.assertEqual(row1[1]["text"], "▶ Play")
         self.assertEqual(row1[1]["style"], "success")
         self.assertIn("player:resume:", row1[1]["callback_data"])
 
@@ -167,14 +167,14 @@ class TestRichMessages(unittest.TestCase):
         paused_ui = build_player_rich_ui(self.state, self.queue)
         paused_btns = [btn for b in paused_ui["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(paused_btns), 4)
-        self.assertEqual(paused_btns[1]["text"], "> Resume")
+        self.assertEqual(paused_btns[1]["text"], "▶ Play")
 
         self.state.resume()
         self.state.skip_votes = {111, 222}
         vote_ui = build_player_rich_ui(self.state, self.queue)
         vote_btns = [btn for b in vote_ui["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(vote_btns), 4)
-        self.assertEqual(vote_btns[3]["text"], "« Skip (2/3)")
+        self.assertEqual(vote_btns[3]["text"], "» Skip (2/3)")
 
         # Playback ended (no track)
         self.state.stop()
@@ -186,18 +186,18 @@ class TestRichMessages(unittest.TestCase):
         queue_active = build_queue_rich_message(self.state, self.queue, is_closed=False)
         q_act_btns = [btn for b in queue_active["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(q_act_btns), 5)
-        self.assertEqual(q_act_btns[4]["text"], "Close")
+        self.assertEqual(q_act_btns[4]["text"], "■ Close")
 
         queue_closed = build_queue_rich_message(self.state, self.queue, is_closed=True)
         q_cls_btns = [btn for b in queue_closed["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(q_cls_btns), 5)
-        self.assertEqual(q_cls_btns[4]["text"], "✔ Closed")
+        self.assertEqual(q_cls_btns[4]["text"], "■ Closed")
 
         # 3. Search Button Persistence: Normal, Selected, Pagination, Closed
         tracks = [self.track] * 7
         search_norm = build_search_rich_ui("Symphony", tracks, page=0)
         s_norm_btns = [btn for b in search_norm["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
-        # 5 tracks + 2 pagination (« Previous, Next ») + 1 cancel = 8 buttons
+        # 5 tracks + 2 pagination (‹ Previous, Next ›) + 1 cancel = 8 buttons
         self.assertEqual(len(s_norm_btns), 8)
 
         search_selected = build_search_rich_ui("Symphony", tracks, page=0, selected_idx=2)
@@ -208,18 +208,18 @@ class TestRichMessages(unittest.TestCase):
         search_closed = build_search_rich_ui("Symphony", tracks, page=0, is_closed=True)
         s_cls_btns = [btn for b in search_closed["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(s_cls_btns), 8)
-        self.assertEqual(s_cls_btns[7]["text"], "❌ Cancelled")
+        self.assertEqual(s_cls_btns[7]["text"], "■ Cancelled")
 
         # 4. Cancel Request Button Persistence: Pending and Cancelled
-        cancel_pending = build_cancel_rich_ui("Title", "req1", 123, button_text="❌ Cancel")
+        cancel_pending = build_cancel_rich_ui("Title", "req1", 123, button_text="■ Cancel")
         c_pend_btns = [btn for b in cancel_pending["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(c_pend_btns), 1)
-        self.assertEqual(c_pend_btns[0]["text"], "❌ Cancel")
+        self.assertEqual(c_pend_btns[0]["text"], "■ Cancel")
 
-        cancel_done = build_cancel_rich_ui("Title", "req1", 123, button_text="❌ Cancelled")
+        cancel_done = build_cancel_rich_ui("Title", "req1", 123, button_text="■ Cancelled")
         c_done_btns = [btn for b in cancel_done["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(c_done_btns), 1)
-        self.assertEqual(c_done_btns[0]["text"], "❌ Cancelled")
+        self.assertEqual(c_done_btns[0]["text"], "■ Cancelled")
 
         # 5. Help/Guide Button Persistence: Active and Closed
         help_active = build_start_rich_message("home", is_owner=False)

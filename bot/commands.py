@@ -94,11 +94,11 @@ async def handle_start(message: Dict[str, Any], args: str = "") -> None:
                     "type": "buttons",
                     "buttons": [
                         {
-                            "text": "➕ ᴀᴅᴅ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ",
+                            "text": "+ " + to_small_caps("add to your group"),
                             "url": "https://t.me/Aaruu_musicbot?startgroup=true",
                         },
                         {
-                            "text": "💬 sᴜᴘᴘᴏʀᴛ",
+                            "text": "≡ " + to_small_caps("support"),
                             "url": "https://t.me/wzzkaanu",
                         },
                     ],
@@ -107,7 +107,7 @@ async def handle_start(message: Dict[str, Any], args: str = "") -> None:
                     "type": "buttons",
                     "buttons": [
                         {
-                            "text": "📖 ʜᴇʟᴘ & ᴄᴏᴍᴍᴀɴᴅs",
+                            "text": "≡ " + to_small_caps("help & commands"),
                             "url": "https://t.me/Aaruu_musicbot?start=help",
                         },
                     ],

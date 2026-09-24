@@ -144,7 +144,15 @@ class TelegramAPIClient:
         Sends native Rich Message using Telegram Bot API.
         Delivers sleek photo card with pure Unicode typography and in-bubble round corner buttons.
         """
-        payload = {"chat_id": chat_id, "rich_message": rich_message}
+        components_markup = self._extract_components(rich_message)
+        payload = {
+            "chat_id": chat_id,
+            "rich_message": rich_message,
+            "blocks": rich_message.get("blocks", []),
+            "components": rich_message.get("blocks", []),
+        }
+        if components_markup.get("inline_keyboard"):
+            payload["reply_markup"] = components_markup
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
         res = await self.bot_api("sendRichMessage", payload)
@@ -157,14 +165,18 @@ class TelegramAPIClient:
     ) -> Dict[str, Any]:
         """
         Edits an existing native Rich Message card with updated content and Rich UI Button Blocks.
-        Guarantees that Rich UI Button Blocks remain Rich UI Button Blocks.
-        Never converts to legacy inline keyboards.
+        Guarantees that the complete component layout is preserved and never dropped.
         """
+        components_markup = self._extract_components(rich_message)
         payload = {
             "chat_id": chat_id,
             "message_id": message_id,
             "rich_message": rich_message,
+            "blocks": rich_message.get("blocks", []),
+            "components": rich_message.get("blocks", []),
         }
+        if components_markup.get("inline_keyboard"):
+            payload["reply_markup"] = components_markup
 
         # 1. Primary: editRichMessage (the direct update counterpart to sendRichMessage)
         res = await self.bot_api("editRichMessage", payload)
@@ -187,7 +199,7 @@ class TelegramAPIClient:
         if "message is not modified" in str(res3.get("description", "")).lower():
             return {"ok": True, "result": True}
 
-        # Fallback updating the media/caption card WITHOUT attaching legacy inline keyboards
+        # Fallback updating the media/caption card with complete components preserved
         return await self._fallback_edit(chat_id, message_id, rich_message)
 
     async def export_chat_invite_link(self, chat_id: int) -> Dict[str, Any]:
@@ -311,6 +323,28 @@ class TelegramAPIClient:
         """Deletes a message from chat."""
         return await self.bot_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
+    def _extract_components(self, rich_message: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extracts the complete button component structure from the Rich Message blocks.
+        Always returns the complete layout of buttons so no component is ever dropped.
+        """
+        blocks = rich_message.get("blocks", [])
+        rows = []
+        for block in blocks:
+            if block.get("type") == "buttons":
+                btns = block.get("buttons", [])
+                row = []
+                for b in btns:
+                    btn_dict: Dict[str, Any] = {"text": b.get("text", "")}
+                    if "callback_data" in b:
+                        btn_dict["callback_data"] = b["callback_data"]
+                    if "url" in b:
+                        btn_dict["url"] = b["url"]
+                    row.append(btn_dict)
+                if row:
+                    rows.append(row)
+        return {"inline_keyboard": rows} if rows else {}
+
     # Internal fallbacks if telegram client/version requires photo/text envelope while preserving Rich UI Button Blocks
     async def _fallback_send(
         self, chat_id: int, rich_message: Dict[str, Any], reply_to_message_id: Optional[int] = None
@@ -318,6 +352,7 @@ class TelegramAPIClient:
         DEFAULT_BANNER = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
         text_content, thumbnail = self._extract_fallback_data(rich_message)
         primary_photo = thumbnail or DEFAULT_BANNER
+        components_markup = self._extract_components(rich_message)
 
         # Enforce Telegram photo caption limit (max 1024 chars)
         safe_caption = text_content[:1000] if len(text_content) > 1000 else text_content
@@ -327,7 +362,11 @@ class TelegramAPIClient:
             "photo": primary_photo,
             "caption": safe_caption,
             "rich_message": rich_message,
+            "blocks": rich_message.get("blocks", []),
+            "components": rich_message.get("blocks", []),
         }
+        if components_markup.get("inline_keyboard"):
+            payload["reply_markup"] = components_markup
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
 
@@ -346,7 +385,11 @@ class TelegramAPIClient:
             "chat_id": chat_id,
             "text": text_content,
             "rich_message": rich_message,
+            "blocks": rich_message.get("blocks", []),
+            "components": rich_message.get("blocks", []),
         }
+        if components_markup.get("inline_keyboard"):
+            payload_txt["reply_markup"] = components_markup
         if reply_to_message_id:
             payload_txt["reply_to_message_id"] = reply_to_message_id
         return await self.bot_api("sendMessage", payload_txt)
@@ -358,14 +401,19 @@ class TelegramAPIClient:
         safe_caption = text_content[:1000] if len(text_content) > 1000 else text_content
         DEFAULT_BANNER = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
         primary_photo = thumbnail or DEFAULT_BANNER
+        components_markup = self._extract_components(rich_message)
 
-        # 1. Try editing photo caption with rich_message preserved; NEVER attach legacy inline keyboards
-        payload_cap = {
+        # 1. Try editing photo caption with complete components preserved
+        payload_cap: Dict[str, Any] = {
             "chat_id": chat_id,
             "message_id": message_id,
             "caption": safe_caption,
             "rich_message": rich_message,
+            "blocks": rich_message.get("blocks", []),
+            "components": rich_message.get("blocks", []),
         }
+        if components_markup.get("inline_keyboard"):
+            payload_cap["reply_markup"] = components_markup
         res = await self.bot_api("editMessageCaption", payload_cap)
         if res.get("ok"):
             return res
@@ -373,8 +421,8 @@ class TelegramAPIClient:
         if "message is not modified" in desc:
             return {"ok": True, "result": True}
 
-        # 2. Try editing media (photo + caption) in-place with rich_message preserved
-        payload_media = {
+        # 2. Try editing media (photo + caption) in-place with complete components preserved
+        payload_media: Dict[str, Any] = {
             "chat_id": chat_id,
             "message_id": message_id,
             "media": {
@@ -383,23 +431,42 @@ class TelegramAPIClient:
                 "caption": safe_caption,
             },
             "rich_message": rich_message,
+            "blocks": rich_message.get("blocks", []),
+            "components": rich_message.get("blocks", []),
         }
+        if components_markup.get("inline_keyboard"):
+            payload_media["reply_markup"] = components_markup
         res_media = await self.bot_api("editMessageMedia", payload_media)
         if res_media.get("ok"):
             return res_media
         if "message is not modified" in str(res_media.get("description", "")).lower():
             return {"ok": True, "result": True}
 
-        # 3. Try editing standard text message with rich_message preserved
-        payload_txt = {
+        # 3. Try editing standard text message with complete components preserved
+        payload_txt: Dict[str, Any] = {
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text_content,
             "rich_message": rich_message,
+            "blocks": rich_message.get("blocks", []),
+            "components": rich_message.get("blocks", []),
         }
+        if components_markup.get("inline_keyboard"):
+            payload_txt["reply_markup"] = components_markup
         res_txt = await self.bot_api("editMessageText", payload_txt)
         if res_txt.get("ok") or "message is not modified" in str(res_txt.get("description", "")).lower():
             return {"ok": True, "result": True}
+
+        # 4. Try updating reply markup directly if caption/text didn't change
+        if components_markup.get("inline_keyboard"):
+            payload_markup = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": components_markup,
+            }
+            res_markup = await self.bot_api("editMessageReplyMarkup", payload_markup)
+            if res_markup.get("ok") or "message is not modified" in str(res_markup.get("description", "")).lower():
+                return {"ok": True, "result": True}
 
         return res_txt
 

@@ -67,14 +67,14 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
             
             # Record cancellation in the centralized player manager
             player_manager.cancelled_requests.add(req_id_str)
-            await bot_api_client.answer_callback_query(cq_id, "❌ Request cancelled.")
+            await bot_api_client.answer_callback_query(cq_id, "■ Request cancelled.")
             from bot.rich_player import build_cancel_rich_ui
             cancel_rich = build_cancel_rich_ui(
                 "REQUEST CANCELLED",
                 req_id_str,
                 requester_id,
-                status_text="❌ " + to_small_caps("request was cancelled by the user."),
-                button_text="❌ Cancelled",
+                status_text="■ " + to_small_caps("request was cancelled by the user."),
+                button_text="■ Cancelled",
                 button_style="danger",
             )
             await bot_api_client.edit_message_rich_text(chat_id, message_id, cancel_rich)
@@ -204,18 +204,18 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
 
             if len(state.skip_votes) >= threshold:
                 state.skip_votes.clear()
-                await bot_api_client.answer_callback_query(cq_id, "⏭ Vote threshold reached! Skipping...")
-                await bot_api_client.send_message(chat_id, f"⏭️ {to_bold_sans('VOTE SKIP SUCCESSFUL')}! Skipping to next track...")
+                await bot_api_client.answer_callback_query(cq_id, "» Vote threshold reached! Skipping...")
+                await bot_api_client.send_message(chat_id, f"» {to_bold_sans('VOTE SKIP SUCCESSFUL')}! Skipping to next track...")
                 next_track, msg = await player_manager.skip(chat_id, session_id)
                 rich_msg = build_player_rich_ui(state, queue)
                 await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
                 if not next_track:
                     await bot_api_client.send_message(
-                        chat_id, "⏹ " + to_small_caps("playback ended. queue is empty.")
+                        chat_id, "■ " + to_small_caps("playback ended. queue is empty.")
                     )
             else:
                 await bot_api_client.answer_callback_query(
-                    cq_id, f"« Skip — {len(state.skip_votes)}/{threshold} votes", show_alert=True
+                    cq_id, f"» Skip — {len(state.skip_votes)}/{threshold} votes", show_alert=True
                 )
                 rich_msg = build_player_rich_ui(state, queue)
                 await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)

@@ -44,17 +44,17 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
     # Ensure requester mention uses username or clickable mention, never raw Telegram user ID
     requester_label = get_user_mention(req_id, req_name, req_user)
 
-    # Play/Pause toggle button (|| Pause for playing, > Resume for paused)
+    # Play/Pause toggle button (⏸ Pause for playing, ▶ Play for paused)
     if state.is_paused:
         play_pause_button = {
-            "text": "> Resume",
+            "text": "▶ Play",
             "style": "success",
             "callback_data": f"player:resume:{session}",
         }
         status_badge = "⏸ " + to_small_caps("paused")
     else:
         play_pause_button = {
-            "text": "|| Pause",
+            "text": "⏸ Pause",
             "style": "primary",
             "callback_data": f"player:pause:{session}",
         }
@@ -62,16 +62,16 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
         if pb_status == "searching":
             status_badge = "🔎 " + to_small_caps("searching")
         elif pb_status == "preparing":
-            status_badge = "⬇️ " + to_small_caps("preparing")
+            status_badge = "⬇ " + to_small_caps("preparing")
         elif pb_status == "starting":
             status_badge = "🎧 " + to_small_caps("starting")
         else:
             status_badge = "▶ " + to_small_caps("playing")
 
-    # Row 1: [ Queue ] [ || Pause / > Resume ] [ ↻ Replay ]
+    # Row 1: [ ≡ Queue ] [ ⏸ Pause / ▶ Play ] [ ↻ Replay ]
     row_1_buttons = [
         {
-            "text": "Queue",
+            "text": "≡ Queue",
             "style": "primary",
             "callback_data": f"player:queue:{session}",
         },
@@ -83,10 +83,10 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
         },
     ]
 
-    # Row 2: [ « Skip ]
-    skip_text = "« Skip"
+    # Row 2: [ » Skip ]
+    skip_text = "» Skip"
     if hasattr(state, "skip_votes") and len(state.skip_votes) > 0:
-        skip_text = f"« Skip ({len(state.skip_votes)}/3)"
+        skip_text = f"» Skip ({len(state.skip_votes)}/3)"
 
     row_2_buttons = [
         {
@@ -218,27 +218,27 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue, is_closed: b
 
     action_buttons_row1 = [
         {
-            "text": "Player",
+            "text": "‹ Player",
             "style": "primary",
             "callback_data": f"player:nowplaying:{session}",
         },
         {
-            "text": "↻",
+            "text": "↻ Refresh",
             "style": "primary",
             "callback_data": f"player:queue:{session}",
         },
         {
-            "text": "Undo",
+            "text": "− Undo",
             "style": "primary",
             "callback_data": f"queue:undo:{session}",
         },
     ]
 
-    close_text = "✔ Closed" if is_closed else "Close"
+    close_text = "■ Closed" if is_closed else "■ Close"
     close_cb = f"player:queue:{session}" if is_closed else f"player:close:{session}"
     action_buttons_row2 = [
         {
-            "text": "Support",
+            "text": "≡ Support",
             "url": SUPPORT_URL,
         },
         {
@@ -376,12 +376,12 @@ def build_search_rich_ui(
             "type": "buttons",
             "buttons": [
                 {
-                    "text": "« Previous",
+                    "text": "‹ Previous",
                     "style": "primary",
                     "callback_data": f"search_page:{prev_target}",
                 },
                 {
-                    "text": "Next »",
+                    "text": "Next ›",
                     "style": "primary",
                     "callback_data": f"search_page:{next_target}",
                 },
@@ -390,7 +390,7 @@ def build_search_rich_ui(
         })
 
     # Cancel button block
-    cancel_text = "❌ Cancelled" if is_closed else "❌ Cancel"
+    cancel_text = "■ Cancelled" if is_closed else "■ Cancel"
     blocks.append({
         "type": "buttons",
         "buttons": [
@@ -414,7 +414,7 @@ def build_cancel_rich_ui(
     request_id: str,
     requester_id: int,
     status_text: str = "Processing request...",
-    button_text: str = "❌ Cancel",
+    button_text: str = "■ Cancel",
     button_style: str = "danger",
 ) -> Dict[str, Any]:
     """
