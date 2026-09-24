@@ -162,47 +162,8 @@ async def handle_search(message: Dict[str, Any], args_text: str) -> None:
 
     SEARCH_CACHE[chat_id] = tracks
 
-    text_lines = [f"🔎 {to_bold_sans('SEARCH RESULTS FOR')}: {sanitize_text(args_text, 40)}\n"]
-    buttons = []
-
-    for i, tr in enumerate(tracks, 1):
-        dur_str = format_time(tr.duration) if tr.duration else "Live"
-        text_lines.append(f"{i}️⃣ {to_bold_sans(tr.title[:45])}\n   👤 {tr.artist[:35]} | ⏱ {dur_str}\n")
-        buttons.append({"text": f"{i}️⃣", "callback_data": f"search_select:{i-1}"})
-
-    text_lines.append(f"\n👇 {to_small_caps('tap a number button below or type /play <number> to stream in VC')}:")
-
-    search_rich = {
-        "type": "rich_message",
-        "blocks": [
-            {
-                "type": "heading",
-                "text": to_bold_sans("MUSIC SEARCH RESULTS"),
-                "size": 1,
-            },
-            {
-                "type": "photo",
-                "photo": {
-                    "type": "photo",
-                    "media": tracks[0].thumbnail or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
-                },
-            },
-            {
-                "type": "paragraph",
-                "text": "\n".join(text_lines),
-            },
-            {
-                "type": "buttons",
-                "buttons": buttons,
-            },
-            {
-                "type": "buttons",
-                "buttons": [
-                    {"text": "❌ " + to_small_caps("cancel search"), "callback_data": "search_select:close"}
-                ],
-            },
-        ],
-    }
+    from bot.rich_player import build_search_rich_ui
+    search_rich = build_search_rich_ui(args_text, tracks)
     await bot_api_client.send_rich_message(chat_id, search_rich)
 
 

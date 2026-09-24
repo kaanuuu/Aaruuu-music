@@ -81,6 +81,24 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         )
         return
 
+    # Check for Search pagination: search_page:<page>
+    if data.startswith("search_page:"):
+        page_str = data.split(":", 1)[1]
+        try:
+            page = int(page_str)
+        except ValueError:
+            page = 0
+        from bot.commands import SEARCH_CACHE
+        tracks = SEARCH_CACHE.get(chat_id, [])
+        if not tracks:
+            await bot_api_client.answer_callback_query(cq_id, "Search session expired.", show_alert=True)
+            return
+        await bot_api_client.answer_callback_query(cq_id)
+        from bot.rich_player import build_search_rich_ui
+        search_rich = build_search_rich_ui("Music", tracks, page=page)
+        await bot_api_client.edit_message_rich_text(chat_id, message_id, search_rich)
+        return
+
     # Check for Help callbacks: help:<section>
     if data.startswith("help:"):
         section = data.split(":", 1)[1]
@@ -188,8 +206,10 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
                     )
             else:
                 await bot_api_client.answer_callback_query(
-                    cq_id, f"⏭ Vote Skip — {len(state.skip_votes)}/{threshold}", show_alert=True
+                    cq_id, f"« Skip — {len(state.skip_votes)}/{threshold} votes", show_alert=True
                 )
+                rich_msg = build_player_rich_ui(state, queue)
+                await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_msg)
 
     elif action in ("loop", "autoplay", "shuffle", "undo"):
         # Administrative commands require chat admin check

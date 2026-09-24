@@ -44,17 +44,17 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
     # Ensure requester mention uses username or clickable mention, never raw Telegram user ID
     requester_label = get_user_mention(req_id, req_name, req_user)
 
-    # Play/Pause toggle button (|| for playing, > for paused)
+    # Play/Pause toggle button (|| Pause for playing, > Resume for paused)
     if state.is_paused:
         play_pause_button = {
-            "text": ">",
+            "text": "> Resume",
             "style": "success",
             "callback_data": f"player:resume:{session}",
         }
         status_badge = "⏸ " + to_small_caps("paused")
     else:
         play_pause_button = {
-            "text": "||",
+            "text": "|| Pause",
             "style": "primary",
             "callback_data": f"player:pause:{session}",
         }
@@ -68,7 +68,7 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
         else:
             status_badge = "▶ " + to_small_caps("playing")
 
-    # Row 1: [ Queue ] [ || / > ] [ ↻ ]
+    # Row 1: [ Queue ] [ || Pause / > Resume ] [ ↻ Replay ]
     row_1_buttons = [
         {
             "text": "Queue",
@@ -77,16 +77,16 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
         },
         play_pause_button,
         {
-            "text": "↻",
+            "text": "↻ Replay",
             "style": "primary",
             "callback_data": f"player:replay:{session}",
         },
     ]
 
-    # Row 2: [ » ]
+    # Row 2: [ « Skip ]
     row_2_buttons = [
         {
-            "text": "»",
+            "text": "« Skip",
             "style": "primary",
             "callback_data": f"player:skip:{session}",
         },
@@ -272,4 +272,149 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue) -> Dict[str,
     return {
         "blocks": blocks,
         "type": "rich_message",
+    }
+
+
+# Centralized alias ensuring unified Rich UI builder
+build_queue_rich_ui = build_queue_rich_message
+
+
+def build_search_rich_ui(
+    query: str,
+    tracks: List[Track],
+    page: int = 0,
+    per_page: int = 5,
+) -> Dict[str, Any]:
+    """
+    Constructs search results using Telegram Rich UI Button Blocks.
+    Displays selectable track blocks, pagination when needed, and a clean cancel button.
+    """
+    total_tracks = len(tracks)
+    total_pages = max(1, (total_tracks + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    page_tracks = tracks[page * per_page : (page + 1) * per_page]
+
+    text_lines = [f"🔎 {to_bold_sans('SEARCH RESULTS FOR')}: \"{query[:40]}\""]
+    if total_pages > 1:
+        text_lines.append(f"📄 {to_small_caps('page')} {page + 1}/{total_pages}")
+    text_lines.append("")
+
+    buttons_list: List[Dict[str, Any]] = []
+    for i, tr in enumerate(page_tracks, start=page * per_page + 1):
+        dur_str = format_time(tr.duration) if tr.duration else "Live"
+        text_lines.append(f"{i}. {to_bold_sans(tr.title[:45])}\n   👤 {tr.artist[:35]} | ⏱ {dur_str}\n")
+        btn_label = f"{i}. {tr.title[:28]} — {tr.artist[:16]}"
+        buttons_list.append({
+            "text": btn_label,
+            "style": "primary",
+            "callback_data": f"search_select:{i-1}",
+        })
+
+    text_lines.append(f"👇 {to_small_caps('tap a track button below to stream in voice chat')}:")
+
+    blocks: List[Dict[str, Any]] = [
+        {
+            "type": "heading",
+            "text": to_bold_sans("MUSIC SEARCH RESULTS"),
+            "size": 1,
+        },
+    ]
+
+    first_thumb = tracks[0].thumbnail if tracks and tracks[0].thumbnail else None
+    if first_thumb and first_thumb.startswith("http"):
+        blocks.append({
+            "type": "photo",
+            "photo": {
+                "type": "photo",
+                "media": first_thumb,
+            },
+        })
+
+    blocks.append({
+        "type": "paragraph",
+        "text": "\n".join(text_lines),
+    })
+
+    # Individual result selection button blocks (1 per line for readability)
+    for btn in buttons_list:
+        blocks.append({
+            "type": "buttons",
+            "buttons": [btn],
+            "align": "center",
+        })
+
+    # Pagination buttons if more than one page
+    if total_pages > 1:
+        nav_buttons: List[Dict[str, Any]] = []
+        if page > 0:
+            nav_buttons.append({
+                "text": "« Previous",
+                "style": "primary",
+                "callback_data": f"search_page:{page - 1}",
+            })
+        if page < total_pages - 1:
+            nav_buttons.append({
+                "text": "Next »",
+                "style": "primary",
+                "callback_data": f"search_page:{page + 1}",
+            })
+        if nav_buttons:
+            blocks.append({
+                "type": "buttons",
+                "buttons": nav_buttons,
+                "align": "center",
+            })
+
+    # Cancel button block
+    blocks.append({
+        "type": "buttons",
+        "buttons": [
+            {
+                "text": "❌ Cancel",
+                "style": "danger",
+                "callback_data": "search_select:close",
+            }
+        ],
+        "align": "center",
+    })
+
+    return {
+        "blocks": blocks,
+        "type": "rich_message",
+    }
+
+
+def build_cancel_rich_ui(
+    title: str,
+    request_id: str,
+    requester_id: int,
+    status_text: str = "Processing request...",
+) -> Dict[str, Any]:
+    """
+    Constructs an interactive pending request message using Rich UI Button Blocks with a Cancel button.
+    """
+    return {
+        "type": "rich_message",
+        "blocks": [
+            {
+                "type": "heading",
+                "text": to_bold_sans(title),
+                "size": 1,
+            },
+            {
+                "type": "paragraph",
+                "text": status_text,
+            },
+            {
+                "type": "buttons",
+                "buttons": [
+                    {
+                        "text": "❌ Cancel",
+                        "style": "danger",
+                        "callback_data": f"request:cancel:{request_id}:{requester_id}",
+                    }
+                ],
+                "align": "center",
+            },
+        ],
     }

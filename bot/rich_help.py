@@ -183,3 +183,8 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
         "blocks": blocks,
         "type": "rich_message",
     }
+
+
+# Centralized alias ensuring unified Rich UI builder
+build_help_rich_ui = build_start_rich_message
+
