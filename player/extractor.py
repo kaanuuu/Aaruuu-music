@@ -1013,11 +1013,23 @@ class MediaExtractor:
                 },
             }
             if self.cookies_path and os.path.exists(self.cookies_path):
-                opts["cookiefile"] = self.cookies_path
+                if any(k in url_or_query.lower() for k in ("youtube.com", "youtu.be", "ytsearch")):
+                    opts["cookiefile"] = self.cookies_path
 
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url_or_query])
-            return os.path.exists(dest_path) and os.path.getsize(dest_path) > 0
+            if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+                return True
+            prefix = os.path.splitext(dest_path)[0]
+            parent_dir = os.path.dirname(dest_path)
+            prefix_name = os.path.basename(prefix)
+            if os.path.exists(parent_dir):
+                for fname in os.listdir(parent_dir):
+                    if fname.startswith(prefix_name + ".") and not fname.endswith(".part"):
+                        fpath = os.path.join(parent_dir, fname)
+                        if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                            return True
+            return False
         except Exception as e:
             logger.warning("yt-dlp download failed for %s: %s", url_or_query, str(e))
             return False
@@ -1040,7 +1052,8 @@ class MediaExtractor:
                 },
             }
             if self.cookies_path and os.path.exists(self.cookies_path):
-                opts["cookiefile"] = self.cookies_path
+                if any(k in url_or_query.lower() for k in ("youtube.com", "youtu.be", "ytsearch")):
+                    opts["cookiefile"] = self.cookies_path
 
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url_or_query])
