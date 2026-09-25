@@ -154,6 +154,18 @@ class TestPlaybackValidation(unittest.TestCase):
         self.assertIsNone(sanitize_url("ftp://example.com"))
         self.assertEqual(sanitize_url("https://example.com/test"), "https://example.com/test")
 
+    def test_assistant_member_peer_resolution(self):
+        """Verify assistant member resolution without requiring admin status."""
+        async def run():
+            vc = VoiceChatAssistant()
+            # Non-connected fallback
+            self.assertFalse(await vc.is_member_of_chat(12345))
+            # Manually adding resolved peer simulates normal member resolution
+            vc._resolved_peers.add(12345)
+            self.assertTrue(await vc.is_member_of_chat(12345))
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

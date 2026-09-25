@@ -376,6 +376,64 @@ class VoiceChatAssistant:
             else:
                 logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", err_msg)
 
+    async def resolve_and_cache_peer(self, chat_id: int) -> bool:
+        """
+        Ensures that the assistant client has resolved the chat/channel peer and access_hash.
+        Works for regular members without requiring admin status.
+        """
+        if not self.app or not self.is_connected:
+            return False
+
+        # 1. Try direct resolve_peer if already cached in Pyrogram
+        try:
+            peer = await self.app.resolve_peer(chat_id)
+            if peer:
+                self._resolved_peers.add(chat_id)
+                return True
+        except Exception:
+            pass
+
+        # 2. Try get_chat(chat_id) directly
+        try:
+            chat = await self.app.get_chat(chat_id)
+            if chat:
+                self._resolved_peers.add(chat_id)
+                return True
+        except Exception as e:
+            logger.debug("Voice Chat: get_chat(%s) note: %s", chat_id, str(e))
+
+        # 3. Try scanning dialogs to cache access_hash for all current chats
+        try:
+            async for dialog in self.app.get_dialogs():
+                if dialog.chat and dialog.chat.id:
+                    self._resolved_peers.add(dialog.chat.id)
+                    if dialog.chat.id == chat_id:
+                        return True
+        except Exception as d_err:
+            logger.debug("Voice Chat: get_dialogs note: %s", str(d_err))
+
+        # 4. Check if resolved now
+        try:
+            peer = await self.app.resolve_peer(chat_id)
+            if peer:
+                self._resolved_peers.add(chat_id)
+                return True
+        except Exception:
+            pass
+
+        return chat_id in self._resolved_peers
+
+    async def is_member_of_chat(self, chat_id: int) -> bool:
+        """
+        Checks if the assistant userbot is present as a member in the specified chat.
+        Works as a regular member without admin permissions.
+        """
+        if chat_id in self._resolved_peers:
+            return True
+        if not self.app or not self.is_connected:
+            return False
+        return await self.resolve_and_cache_peer(chat_id)
+
     async def join_chat(self, chat_id_or_invite_link: Any) -> bool:
         """Attempts to join a group using invite link or chat ID."""
         if not self.app or not self.is_connected:
@@ -469,47 +527,7 @@ class VoiceChatAssistant:
                 playable_stream = audio_source
 
                 # Fast peer verification & access hash caching before PyTgCalls call
-                peer_cached = False
-                if chat_id in self._resolved_peers:
-                    peer_cached = True
-
-                if not peer_cached:
-                    try:
-                        await self.app.get_chat(chat_id)
-                        self._resolved_peers.add(chat_id)
-                        peer_cached = True
-                    except Exception as peer_err:
-                        logger.info("Voice Chat: get_chat(%s) note: %s. Attempting member lookup and dialog scan...", chat_id, str(peer_err))
-                        try:
-                            if self.assistant_id:
-                                await self.app.get_chat_member(chat_id, self.assistant_id)
-                                self._resolved_peers.add(chat_id)
-                                peer_cached = True
-                        except Exception:
-                            pass
-
-                        if not peer_cached:
-                            try:
-                                async for dialog in self.app.get_dialogs(limit=50):
-                                    if dialog.chat and dialog.chat.id == chat_id:
-                                        self._resolved_peers.add(chat_id)
-                                        peer_cached = True
-                                        break
-                            except Exception as d_err:
-                                logger.debug("Voice Chat: get_dialogs scan note: %s", str(d_err))
-
-                if not peer_cached:
-                    try:
-                        from bot.api import bot_api_client
-                        inv_res = await bot_api_client.export_chat_invite_link(chat_id)
-                        inv_link = inv_res.get("result") if inv_res.get("ok") else None
-                        if inv_link:
-                            await self.app.join_chat(inv_link)
-                            await self.app.get_chat(chat_id)
-                            self._resolved_peers.add(chat_id)
-                            peer_cached = True
-                    except Exception as inv_err:
-                        logger.debug("Voice Chat: Invite link peer resolution note: %s", str(inv_err))
+                await self.resolve_and_cache_peer(chat_id)
 
                 # Pipeline Diagnostics & Logs
                 is_http = playable_stream.startswith(("http://", "https://"))
@@ -635,34 +653,33 @@ class VoiceChatAssistant:
                     await _do_stream()
                     logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully!")
                 except Exception as inner_e:
-                    # If CHANNEL_INVALID or peer missing on first try, attempt 1 retry after forcing peer resolution
                     err_str = str(inner_e).lower()
                     logger.warning("[MEDIA-PIPELINE DEBUG] PyTgCalls stream call encountered exception: %s", str(inner_e))
-                    if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str or "group_call" in err_str:
-                        logger.info("Voice Chat: Initial stream join failed (%s). Retrying after peer sync...", str(inner_e))
+                    # Attempt 1 retry after refreshing peer cache
+                    if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str:
+                        logger.info("Voice Chat: Initial stream join failed (%s). Refreshing peer resolution and retrying...", str(inner_e))
                         await asyncio.sleep(0.5)
-                        try:
-                            from bot.api import bot_api_client
-                            inv_res = await bot_api_client.export_chat_invite_link(chat_id)
-                            inv_link = inv_res.get("result") if inv_res.get("ok") else None
-                            if inv_link:
-                                await self.app.join_chat(inv_link)
-                        except Exception as peer_retry_err:
-                            logger.warning("[MEDIA-PIPELINE DEBUG] Peer sync invite link join error: %s", str(peer_retry_err))
-                        
-                        logger.info("[MEDIA-PIPELINE DEBUG] Retrying PyTgCalls playback call...")
+                        await self.resolve_and_cache_peer(chat_id)
                         try:
                             await _do_stream()
                             logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully on retry!")
                         except Exception as retry_err:
                             retry_err_str = str(retry_err).lower()
-                            if "channel_invalid" in retry_err_str or "peer" in retry_err_str or "400" in retry_err_str or "group_call" in retry_err_str:
-                                raise RuntimeError(
-                                    "ASSISTANT_NOT_IN_GROUP / CHANNEL_INVALID: Telegram returned CHANNEL_INVALID. "
-                                    "The assistant userbot must be added to the group and promoted to administrator with "
-                                    "'Manage Video Chats' permission, and the group Voice Chat must be started manually first!"
-                                )
+                            if any(k in retry_err_str for k in ("groupcall_invalid", "groupcall_forbidden", "no_active_group_call", "voice_chat_not_started", "call is not active")):
+                                raise RuntimeError("Voice Chat is not currently active in this group. Please start the Voice Chat first, then send /play again.")
+                            elif any(k in retry_err_str for k in ("user_not_participant", "channel_private")):
+                                raise RuntimeError(f"Voice Assistant (@{self.assistant_username or 'Assistant'}) is not a member of this group. Please add the assistant as a normal member.")
+                            elif "channel_invalid" in retry_err_str or "peer_id_invalid" in retry_err_str:
+                                raise RuntimeError("Telegram could not resolve the group voice chat (CHANNEL_INVALID). Please ensure the assistant is in this group and the Voice Chat is currently active.")
+                            elif "muted_by_admin" in retry_err_str:
+                                raise RuntimeError("The assistant was muted by an admin in the Voice Chat. Please unmute the assistant to allow audio streaming.")
                             raise retry_err
+                    elif any(k in err_str for k in ("groupcall_invalid", "groupcall_forbidden", "no_active_group_call", "voice_chat_not_started", "call is not active")):
+                        raise RuntimeError("Voice Chat is not currently active in this group. Please start the Voice Chat first, then send /play again.")
+                    elif any(k in err_str for k in ("user_not_participant", "channel_private")):
+                        raise RuntimeError(f"Voice Assistant (@{self.assistant_username or 'Assistant'}) is not a member of this group. Please add the assistant as a normal member.")
+                    elif "muted_by_admin" in err_str:
+                        raise RuntimeError("The assistant was muted by an admin in the Voice Chat. Please unmute the assistant to allow audio streaming.")
                     else:
                         raise inner_e
 

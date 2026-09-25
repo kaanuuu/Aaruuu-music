@@ -370,41 +370,47 @@ async def _finish_playback_flow(
     if chat_id < 0 and voice_assistant.is_configured:
         if voice_assistant.is_connected and voice_assistant.assistant_id:
             try:
-                member_resp = await bot_api_client.get_chat_member(chat_id, voice_assistant.assistant_id)
-                is_member = False
-                if member_resp.get("ok"):
-                    status = member_resp.get("result", {}).get("status", "")
-                    if status in ("member", "administrator", "creator"):
-                        is_member = True
+                # 1. First check if assistant client can directly resolve/access the chat as a member
+                is_member = await voice_assistant.is_member_of_chat(chat_id)
 
+                # 2. If not detected via assistant, check via Bot API
+                if not is_member:
+                    member_resp = await bot_api_client.get_chat_member(chat_id, voice_assistant.assistant_id)
+                    if member_resp.get("ok"):
+                        member_data = member_resp.get("result", {})
+                        status = member_data.get("status", "")
+                        if status in ("member", "administrator", "creator") or (status == "restricted" and member_data.get("is_member", True)):
+                            is_member = True
+
+                # 3. If still not in group, attempt auto-joining via invite link if exportable
                 if not is_member:
                     invite_res = await bot_api_client.export_chat_invite_link(chat_id)
-                    invite_link = invite_res.get("result")
-                    joined = False
+                    invite_link = invite_res.get("result") if invite_res.get("ok") else None
                     if invite_link:
-                        joined = await voice_assistant.join_chat(invite_link)
+                        is_member = await voice_assistant.join_chat(invite_link)
 
-                    if not joined:
-                        asst_tag = (
-                            f"@{voice_assistant.assistant_username}"
-                            if voice_assistant.assistant_username
-                            else "Assistant"
-                        )
-                        warn_msg = (
-                            f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
-                            f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
-                            f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
-                            f"1. Add {asst_tag} directly to this group as a member.\n"
-                            f"2. Start Video Chat / Voice Chat in the group.\n\n"
-                            f"Then send {'/vplay' if is_video else '/play'} again to stream live! 🎵"
-                        )
-                        if status_msg_id:
-                            await bot_api_client.edit_message_text(chat_id, status_msg_id, warn_msg, parse_mode="HTML")
-                        else:
-                            await bot_api_client.send_message(chat_id, warn_msg, parse_mode="HTML", reply_to_message_id=reply_to_id)
-                        return
-            except Exception:
-                pass
+                # 4. If assistant is genuinely not present in group, notify user cleanly
+                if not is_member:
+                    asst_tag = (
+                        f"@{voice_assistant.assistant_username}"
+                        if voice_assistant.assistant_username
+                        else "Assistant"
+                    )
+                    warn_msg = (
+                        f"⚠️ {to_bold_sans('ASSISTANT NOT IN GROUP')}\n\n"
+                        f"Voice Assistant ({asst_tag}) is not in this group.\n\n"
+                        f"👉 {to_bold_sans('HOW TO RESOLVE')}:\n"
+                        f"1. Add {asst_tag} to this group as a normal member.\n"
+                        f"2. Start Voice Chat in the group.\n\n"
+                        f"Then send {'/vplay' if is_video else '/play'} again to stream! 🎵"
+                    )
+                    if status_msg_id:
+                        await bot_api_client.edit_message_text(chat_id, status_msg_id, warn_msg, parse_mode="HTML")
+                    else:
+                        await bot_api_client.send_message(chat_id, warn_msg, parse_mode="HTML", reply_to_message_id=reply_to_id)
+                    return
+            except Exception as e:
+                logger.debug("Assistant pre-flight membership check note: %s", str(e))
 
     # Play or Queue
     is_now_playing, state, queue = await player_manager.play_or_queue(
