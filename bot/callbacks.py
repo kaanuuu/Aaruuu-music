@@ -88,6 +88,25 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         )
         return
 
+    # Check for Recommendation callback: play_rec:<track_id>
+    if data.startswith("play_rec:"):
+        from player.manager import RECOMMENDATION_CACHE
+        rec_tr = RECOMMENDATION_CACHE.get(chat_id)
+        if not rec_tr:
+            await bot_api_client.answer_callback_query(cq_id, "Recommendation expired. Try /play again.", show_alert=True)
+            return
+        await bot_api_client.answer_callback_query(cq_id, f"Preparing '{rec_tr.title}'...")
+        fake_msg = {"chat": {"id": chat_id}, "from": {"id": user_id, "first_name": from_user.get("first_name", "User")}, "message_id": message_id}
+        from bot.commands import _finish_playback_flow
+        from utils.formatting import get_user_mention
+        fname = from_user.get("first_name", "User")
+        uname = from_user.get("username")
+        requester_label = get_user_mention(user_id, fname, uname)
+        await _finish_playback_flow(
+            fake_msg, rec_tr, None, user_id, fname, uname, requester_label, requester_label, is_video=False
+        )
+        return
+
     # Check for Search pagination: search_page:<page>
     if data.startswith("search_page:"):
         page_str = data.split(":", 1)[1]

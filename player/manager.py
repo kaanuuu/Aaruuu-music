@@ -12,6 +12,9 @@ from player.voice_chat import voice_assistant
 from utils.logging import logger
 
 
+RECOMMENDATION_CACHE: Dict[int, Track] = {}
+
+
 class PlayerManager:
     """Central coordinator ensuring isolated state and queues for each chat."""
 
@@ -496,31 +499,45 @@ class PlayerManager:
                 loop = asyncio.get_running_loop()
                 auto_track = await loop.run_in_executor(None, extractor.extract_related_track, old_track)
                 if auto_track:
-                    # Prepare autoplay track properties
-                    state.current_track = auto_track
-                    state.requested_by = {"id": 0, "name": "Autoplay 📻"}
-                    state.is_paused = False
-                    state.new_session()
-                    
-                    state.playback_status = "preparing"
-                    await self._update_playback_ui(chat_id)
-                    await self._download_track(auto_track)
-                    auto_source = auto_track.playable_source
-                    if auto_source and isinstance(auto_source, str):
-                        state.playback_status = "starting"
-                        await self._update_playback_ui(chat_id)
-                        stream_ok = await voice_assistant.play_audio(
-                            chat_id, auto_source, is_video=getattr(auto_track, "is_video", False)
+                    RECOMMENDATION_CACHE[chat_id] = auto_track
+                    logger.info("[AUTOPLAY] Generated recommendation '%s' for chat %s", auto_track.title, chat_id)
+                    try:
+                        from bot.api import bot_api_client
+                        from utils.typography import to_bold_sans
+                        rec_text = (
+                            f"🎵 {to_bold_sans('MUSIC FINISHED')}\n\n"
+                            f"Finished playing: <b>{old_track.title}</b>\n\n"
+                            f"💡 {to_bold_sans('RECOMMENDED NEXT')}:\n"
+                            f"<b>{auto_track.title}</b> — {auto_track.artist}"
                         )
-                        if stream_ok:
-                            state.is_playing = True
-                            state.playback_status = "playing"
-                            state.started_at = time.time()
-                            state.paused_at = None
-                            state.pause_duration_offset = 0.0
-                            await self._send_new_player_message(chat_id)
-                            self._start_timeline_task(chat_id)
-                            return auto_track, f"Autoplay: {auto_track.title}"
+                        rec_rich = {
+                            "type": "rich_message",
+                            "blocks": [
+                                {
+                                    "type": "heading",
+                                    "text": to_bold_sans("MUSIC FINISHED"),
+                                    "size": 1,
+                                },
+                                {
+                                    "type": "paragraph",
+                                    "text": rec_text,
+                                },
+                                {
+                                    "type": "buttons",
+                                    "buttons": [
+                                        {
+                                            "text": "▶ Play Recommendation",
+                                            "style": "success",
+                                            "callback_data": f"play_rec:{auto_track.track_id}",
+                                        }
+                                    ],
+                                    "align": "center",
+                                },
+                            ],
+                        }
+                        await bot_api_client.send_rich_message(chat_id, rec_rich)
+                    except Exception as e:
+                        logger.warning("Failed to send recommendation rich message: %s", str(e))
 
             # Delete old player message if any so chat is left completely clean
             if state.player_message_id:
@@ -569,13 +586,29 @@ class PlayerManager:
     ) -> Tuple[bool, str]:
         lock = await self._get_lock(chat_id)
         async with lock:
-            state = self._states.get(chat_id)
-            if not state:
-                return False, "Player inactive."
+            if chat_id not in self._states:
+                self._states[chat_id] = PlayerState(chat_id)
+            state = self._states[chat_id]
             if session_id and state.session_id != session_id:
                 return state.autoplay, "Player inactive."
             ap = state.toggle_autoplay()
             return ap, f"Autoplay is now {'ENABLED' if ap else 'DISABLED'}"
+
+    async def set_autoplay(self, chat_id: int, enabled: bool) -> Tuple[bool, str]:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            if chat_id not in self._states:
+                self._states[chat_id] = PlayerState(chat_id)
+            state = self._states[chat_id]
+            state.autoplay = enabled
+            return enabled, f"Autoplay {'ENABLED' if enabled else 'DISABLED'} for this chat."
+
+    async def get_autoplay(self, chat_id: int) -> bool:
+        lock = await self._get_lock(chat_id)
+        async with lock:
+            if chat_id not in self._states:
+                self._states[chat_id] = PlayerState(chat_id)
+            return self._states[chat_id].autoplay
 
     async def seek(self, chat_id: int, seconds: int) -> Tuple[bool, str]:
         lock = await self._get_lock(chat_id)

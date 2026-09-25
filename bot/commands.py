@@ -32,6 +32,7 @@ COMMANDS_REGISTRY: List[Dict[str, str]] = [
     {"command": "vplay", "description": "Stream video directly in Voice Chat"},
     {"command": "search", "description": "Search songs with 1-5 selection buttons"},
     {"command": "song", "description": "Search and play a specific song"},
+    {"command": "autoplay", "description": "Toggle song recommendation mode (on/off)"},
     {"command": "pause", "description": "Pause current playback"},
     {"command": "resume", "description": "Resume paused audio"},
     {"command": "replay", "description": "Replay current song from 0:00"},
@@ -1171,3 +1172,40 @@ async def handle_vctest(message: Dict[str, Any]) -> None:
                 await bot_api_client.delete_message(chat_id, status_id)
         except Exception:
             pass
+
+
+async def handle_autoplay(message: Dict[str, Any], args_text: str = "") -> None:
+    """Handles /autoplay [on|off] command to configure chat recommendation mode."""
+    chat_id = message["chat"]["id"]
+    reply_to_id = message.get("message_id")
+    clean_arg = args_text.strip().lower()
+
+    if clean_arg == "on":
+        await player_manager.set_autoplay(chat_id, True)
+        msg_text = (
+            f"🔄 {to_bold_sans('AUTOPLAY ENABLED')}\n\n"
+            f"When a song finishes and the queue is empty, Aaruu Music will recommend a similar song with a <b>▶ Play</b> button."
+        )
+    elif clean_arg == "off":
+        await player_manager.set_autoplay(chat_id, False)
+        msg_text = (
+            f"⏹️ {to_bold_sans('AUTOPLAY DISABLED')}\n\n"
+            f"Autoplay recommendations are turned off for this chat."
+        )
+    elif not clean_arg:
+        current_st = await player_manager.get_autoplay(chat_id)
+        st_label = "ENABLED 🟢" if current_st else "DISABLED 🔴"
+        msg_text = (
+            f"ℹ️ {to_bold_sans('AUTOPLAY STATUS')}\n\n"
+            f"Autoplay is currently: <b>{st_label}</b>\n\n"
+            f"💡 Use <code>/autoplay on</code> or <code>/autoplay off</code> to toggle."
+        )
+    else:
+        msg_text = (
+            f"💡 {to_bold_sans('USAGE')}: <code>/autoplay on</code> | <code>/autoplay off</code>"
+        )
+
+    await bot_api_client.send_message(
+        chat_id, msg_text, parse_mode="HTML", reply_to_message_id=reply_to_id
+    )
+
