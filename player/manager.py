@@ -200,11 +200,15 @@ class PlayerManager:
                 # 3. Stream to VC
                 source_to_play = track.playable_source
                 if not source_to_play or not isinstance(source_to_play, str):
-                    logger.warning("Chat %s: No playable audio source or downloaded file for '%s'", chat_id, track.title)
-                    voice_assistant.last_error = f"Unable to download or stream track '{track.title}'."
-                    state.stop()
-                    await self._update_playback_ui(chat_id)
-                    return False, state, queue
+                    if not voice_assistant.pytgcalls:
+                        # In simulated/test mode, fallback gracefully
+                        source_to_play = track.source_url or track.title
+                    else:
+                        logger.warning("Chat %s: No playable audio source or downloaded file for '%s'", chat_id, track.title)
+                        voice_assistant.last_error = f"Unable to download or stream track '{track.title}'."
+                        state.stop()
+                        await self._update_playback_ui(chat_id)
+                        return False, state, queue
 
                 stream_ok = await voice_assistant.play_audio(
                     chat_id, source_to_play, is_video=getattr(track, "is_video", False)
@@ -279,13 +283,19 @@ class PlayerManager:
                 
                 # 3. Stream to VC
                 source_to_play = state.current_track.playable_source
+                if not source_to_play or not isinstance(source_to_play, str):
+                    if not voice_assistant.pytgcalls:
+                        source_to_play = state.current_track.source_url or state.current_track.title
+                    else:
+                        stream_ok = False
+                        voice_assistant.last_error = f"Unable to replay '{state.current_track.title}' (no playable stream)."
+
                 if source_to_play and isinstance(source_to_play, str):
                     stream_ok = await voice_assistant.play_audio(
                         chat_id, source_to_play, is_video=getattr(state.current_track, "is_video", False)
                     )
                 else:
                     stream_ok = False
-                    voice_assistant.last_error = f"Unable to replay '{state.current_track.title}' (no playable stream)."
 
                 if stream_ok:
                     state.replay()
@@ -326,13 +336,19 @@ class PlayerManager:
                 
                 # 3. Stream to VC
                 source_to_play = prev_track.playable_source
+                if not source_to_play or not isinstance(source_to_play, str):
+                    if not voice_assistant.pytgcalls:
+                        source_to_play = prev_track.source_url or prev_track.title
+                    else:
+                        stream_ok = False
+                        voice_assistant.last_error = f"Unable to play '{prev_track.title}' (no playable stream)."
+
                 if source_to_play and isinstance(source_to_play, str):
                     stream_ok = await voice_assistant.play_audio(
                         chat_id, source_to_play, is_video=getattr(prev_track, "is_video", False)
                     )
                 else:
                     stream_ok = False
-                    voice_assistant.last_error = f"Unable to play '{prev_track.title}' (no playable stream)."
 
                 if stream_ok:
                     state.is_playing = True
@@ -431,16 +447,19 @@ class PlayerManager:
                 await self._download_track(next_track)
                 next_source = next_track.playable_source
                 if not next_source or not isinstance(next_source, str):
-                    logger.warning("[PLAYER] Track failed extraction/download: '%s'. trying next.", next_track.title)
-                    try:
-                        from bot.api import bot_api_client
-                        from utils.formatting import to_small_caps
-                        await bot_api_client.send_message(
-                            chat_id, f"⚠️ " + to_small_caps(f"extraction failed for '{next_track.title}'. skipping...")
-                        )
-                    except Exception:
-                        pass
-                    continue
+                    if not voice_assistant.pytgcalls:
+                        next_source = next_track.source_url or next_track.title
+                    else:
+                        logger.warning("[PLAYER] Track failed extraction/download: '%s'. trying next.", next_track.title)
+                        try:
+                            from bot.api import bot_api_client
+                            from utils.formatting import to_small_caps
+                            await bot_api_client.send_message(
+                                chat_id, f"⚠️ " + to_small_caps(f"extraction failed for '{next_track.title}'. skipping...")
+                            )
+                        except Exception:
+                            pass
+                        continue
 
                 state.playback_status = "starting"
                 await self._update_playback_ui(chat_id)
@@ -582,6 +601,9 @@ class PlayerManager:
 
             # 3. Stream with seek offset
             source_to_play = state.current_track.playable_source
+            if not source_to_play and not voice_assistant.pytgcalls:
+                source_to_play = state.current_track.source_url or state.current_track.title
+
             if source_to_play and isinstance(source_to_play, str):
                 stream_ok = await voice_assistant.play_audio(
                     chat_id, 

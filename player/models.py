@@ -46,7 +46,7 @@ class Track:
 
     @property
     def playable_source(self) -> Optional[str]:
-        """Returns local file path if downloaded and exists, else stream_url if valid, else source_url as fallback."""
+        """Returns local file path if downloaded and exists, else direct media stream_url if valid. Never returns watch-page URLs."""
         import os
         if hasattr(self, "local_filepath") and self.local_filepath and isinstance(self.local_filepath, str) and os.path.exists(self.local_filepath):
             try:
@@ -55,19 +55,17 @@ class Track:
             except Exception:
                 pass
         
-        # Ensure stream_url is a direct media stream URL and not a watch webpage URL
-        if self.stream_url and isinstance(self.stream_url, str) and ("youtube.com/watch" not in self.stream_url and "youtu.be/" not in self.stream_url):
-            return self.stream_url
+        # Ensure stream_url is a direct media stream URL and NOT a watch webpage URL
+        if self.stream_url and isinstance(self.stream_url, str):
+            if "youtube.com/watch" not in self.stream_url and "youtu.be/" not in self.stream_url and "youtube.com/shorts" not in self.stream_url:
+                if self.stream_url.startswith(("http://", "https://")):
+                    return self.stream_url
 
-        if self.source_url and isinstance(self.source_url, str) and ("youtube.com/watch" not in self.source_url and "youtu.be/" not in self.source_url):
-            return self.source_url
-
-        # Fallback to source_url if it is a valid HTTP/HTTPS URL
-        if self.source_url and isinstance(self.source_url, str) and self.source_url.startswith(("http://", "https://")):
-            return self.source_url
-
-        if self.stream_url and isinstance(self.stream_url, str) and self.stream_url.startswith(("http://", "https://")):
-            return self.stream_url
+        # Direct non-YouTube audio CDN source URL
+        if self.source_url and isinstance(self.source_url, str):
+            if "youtube.com/watch" not in self.source_url and "youtu.be/" not in self.source_url and "youtube.com/shorts" not in self.source_url:
+                if self.source_url.startswith(("http://", "https://")) and any(ext in self.source_url for ext in (".mp3", ".m4a", ".aac", ".ogg", "saavncdn", "sndcdn")):
+                    return self.source_url
 
         return None
 
@@ -88,11 +86,44 @@ class Track:
             "requester_id": self.requester_id,
             "requester_username": self.requester_username,
             "requester_mention": self.requester_mention,
-            "request_id": self.request_id,
-            "thumbnail_url": self.thumbnail_url,
+            "request_id": getattr(self, "request_id", ""),
+            "thumbnail_url": getattr(self, "thumbnail_url", ""),
             "is_video": getattr(self, "is_video", False),
             "media_type": getattr(self, "media_type", "audio"),
         }
+
+
+def classify_media_source(source: Optional[str]) -> str:
+    """
+    Classifies media source:
+    - LOCAL_FILE: local path on disk that exists and is non-empty
+    - DIRECT_HTTP_MEDIA: direct audio/video HTTP(S) stream (e.g. CDN .mp3/.m4a, soundcloud stream, saavncdn)
+    - YOUTUBE_WATCH_URL: raw YouTube watch/shorts webpage URL (must NOT be passed to FFmpeg)
+    - UNKNOWN: missing, invalid, or unrecognized
+    """
+    import os
+    if not source or not isinstance(source, str):
+        return "UNKNOWN"
+
+    clean = source.strip()
+    if not clean:
+        return "UNKNOWN"
+
+    if os.path.exists(clean) and os.path.isfile(clean):
+        try:
+            if os.path.getsize(clean) > 0:
+                return "LOCAL_FILE"
+        except Exception:
+            pass
+        return "UNKNOWN"
+
+    if "youtube.com/watch" in clean or "youtu.be/" in clean or "youtube.com/shorts" in clean or "youtube.com/embed" in clean:
+        return "YOUTUBE_WATCH_URL"
+
+    if clean.startswith(("http://", "https://")):
+        return "DIRECT_HTTP_MEDIA"
+
+    return "UNKNOWN"
 
 
 class PlayerState:
@@ -233,4 +264,32 @@ class PlayerState:
         self.paused_at = None
         self.pause_duration_offset = 0.0
         self.new_session()
+
+
+def classify_media_source(source_path_or_url: Optional[str]) -> str:
+    """
+    Classifies a candidate media source to avoid passing YouTube watch URLs or invalid streams to FFmpeg:
+    Returns one of: 'LOCAL_FILE', 'DIRECT_HTTP_MEDIA', 'YOUTUBE_WATCH_URL', 'UNKNOWN'
+    """
+    if not source_path_or_url or not isinstance(source_path_or_url, str) or not source_path_or_url.strip():
+        return "UNKNOWN"
+    
+    # 1. YouTube watch and shorts URLs
+    if any(yt in source_path_or_url for yt in ("youtube.com/watch", "youtu.be/", "youtube.com/shorts")):
+        return "YOUTUBE_WATCH_URL"
+
+    # 2. Local file
+    import os
+    if os.path.exists(source_path_or_url):
+        try:
+            if os.path.getsize(source_path_or_url) > 0:
+                return "LOCAL_FILE"
+        except Exception:
+            pass
+
+    # 3. Direct HTTP media URLs
+    if source_path_or_url.startswith(("http://", "https://")):
+        return "DIRECT_HTTP_MEDIA"
+
+    return "UNKNOWN"
 

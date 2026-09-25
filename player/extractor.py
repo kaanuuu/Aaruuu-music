@@ -327,85 +327,152 @@ class MediaExtractor:
         logger.info("[EXTRACTOR] Multi-candidate search for query: '%s' (cleaned: '%s')", clean_input, clean_query)
 
         # 1. Search JioSaavn for candidate tracks
-        jio_candidates = []
+        jio_candidates: List[Track] = []
         try:
             jio_candidates = await loop.run_in_executor(
                 None, self._extract_jiosaavn_multi, clean_query, 5, requester_id, requester_name
             )
+            for j in jio_candidates:
+                j.source = "jiosaavn"
         except Exception as e:
             logger.debug("[EXTRACTOR] JioSaavn search note: %s", str(e))
 
         # 2. Search YouTube scraper for candidate tracks
-        yt_candidates = []
+        yt_candidates: List[Track] = []
         try:
             yt_candidates = await loop.run_in_executor(
                 None, self._search_youtube_ytinitialdata, clean_query, 5, requester_id, requester_name
             )
+            for y in yt_candidates:
+                y.source = "youtube"
         except Exception as e:
             logger.debug("[EXTRACTOR] YouTube scraper search note: %s", str(e))
 
-        all_candidates = jio_candidates + yt_candidates
+        # 3. Search yt-dlp YouTube
+        yt_dlp_candidates: List[Track] = []
+        try:
+            yt_dlp_candidates = await loop.run_in_executor(
+                None, self._extract_ytdlp_multi, clean_query, 5, requester_id, requester_name
+            )
+        except Exception as e:
+            logger.debug("[EXTRACTOR] yt-dlp multi search note: %s", str(e))
 
-        # 3. Score and filter candidates against query
+        # 4. Search SoundCloud candidates
+        sc_candidates: List[Track] = []
+        try:
+            sc_candidates = await loop.run_in_executor(
+                None, self._extract_soundcloud_multi, clean_query, 5, requester_id, requester_name
+            )
+        except Exception as e:
+            logger.debug("[EXTRACTOR] SoundCloud multi search note: %s", str(e))
+
+        all_candidates = jio_candidates + yt_candidates + yt_dlp_candidates + sc_candidates
+        logger.info(
+            "[SEARCH] query=\"%s\" provider=\"multi\" results=%d (jio=%d, yt_scrape=%d, yt_dlp=%d, sc=%d)",
+            clean_input,
+            len(all_candidates),
+            len(jio_candidates),
+            len(yt_candidates),
+            len(yt_dlp_candidates),
+            len(sc_candidates),
+        )
+
+        if not all_candidates:
+            logger.warning("[SEARCH_FAILED] No search results returned from any provider for: '%s'", clean_input)
+            return None
+
+        # 5. Score and filter candidates against query
         scored_candidates: List[Tuple[float, Track]] = []
+        seen_cand_ids = set()
         for cand in all_candidates:
+            if cand.track_id in seen_cand_ids:
+                continue
+            seen_cand_ids.add(cand.track_id)
             is_valid, score, reason = validate_and_score_track(clean_input, cand)
             if is_valid:
                 scored_candidates.append((score, cand))
             else:
                 logger.debug("[EXTRACTOR] Filtered candidate '%s': %s", cand.title, reason)
 
+        # If strict scoring rejected all, allow highest-overlap candidate
+        if not scored_candidates and all_candidates:
+            logger.info("[EXTRACTOR] Strict validation filter fallback: evaluating all %d candidates", len(all_candidates))
+            for cand in all_candidates:
+                _, score, _ = validate_and_score_track(clean_input, cand)
+                scored_candidates.append((max(score, 0.1), cand))
+
+        if not scored_candidates:
+            logger.warning("[NO_MATCH] No acceptable audio match found for '%s'", clean_input)
+            return None
+
         # Sort highest score first
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        # 4. Iterate through ranked candidates and test playable audio
-        from player.providers.youtube import youtube_provider
+        # 6. Iterate through ranked candidates, extract/download audio, and verify with FFmpeg
+        from player.models import classify_media_source
 
         for score, cand in scored_candidates:
-            # If YouTube candidate without stream_url, resolve stream
-            if not cand.stream_url or "youtube.com/watch" in (cand.stream_url or "") or "youtu.be/" in (cand.stream_url or ""):
-                resolved = await loop.run_in_executor(
-                    None, youtube_provider._extract_ytdlp, cand.source_url, True, requester_id, requester_name
-                )
-                if resolved and resolved.stream_url:
-                    cand.stream_url = resolved.stream_url
+            logger.info(
+                "[MATCH] candidate=\"%s\" video_id=\"%s\" url=\"%s\" source=\"%s\" score=%.2f",
+                cand.title,
+                cand.track_id,
+                cand.source_url,
+                getattr(cand, "source", "unknown"),
+                score,
+            )
+            logger.info("[EXTRACTOR] status=started candidate=\"%s\"", cand.title)
+
+            # Download track to local cache for resilient playback
+            download_ok = await self.download_track(cand)
+
+            cand_source = cand.playable_source
+            source_type = classify_media_source(cand_source)
+
+            # Strict source check: Never pass raw YouTube watch URLs to FFmpeg
+            if source_type in ("LOCAL_FILE", "DIRECT_HTTP_MEDIA"):
+                logger.info("[EXTRACTOR] status=success candidate=\"%s\"", cand.title)
+                logger.info("[SOURCE] type=%s path=\"%s\"", source_type, cand_source)
+
+                # Validate media decoding with FFmpeg
+                ok, log = await verify_media_file_with_ffmpeg(cand_source)
+                if ok:
+                    cand.is_video = False
+                    cand.media_type = "audio"
+                    logger.info(
+                        "[EXTRACTOR] Selected and verified track: '%s' by %s (Score: %.2f)",
+                        cand.title,
+                        cand.artist,
+                        score,
+                    )
+                    return cand
                 else:
-                    # yt-dlp was blocked or failed for this candidate, try next
-                    continue
-
-            cand.is_video = False
-            cand.media_type = "audio"
-
-            # Validate media decoding with FFmpeg
-            ok, log = await verify_media_file_with_ffmpeg(cand.playable_source or cand.stream_url)
-            if ok:
-                logger.info(
-                    "[EXTRACTOR] Selected and verified track: '%s' by %s (Score: %.2f)",
-                    cand.title,
-                    cand.artist,
-                    score,
-                )
-                return cand
+                    logger.warning("[EXTRACTOR] Candidate '%s' failed FFmpeg validation: %s", cand.title, log)
             else:
-                logger.warning("[EXTRACTOR] Candidate '%s' failed FFmpeg validation: %s", cand.title, log)
-                continue
+                logger.warning(
+                    "[EXTRACTION_FAILED] Candidate '%s' playable_source classified as %s (not LOCAL_FILE/DIRECT_HTTP_MEDIA)",
+                    cand.title,
+                    source_type,
+                )
 
-        # 5. Fallback to SoundCloud search if all previous candidates failed
+        # 7. Fallback to direct SoundCloud search if all previous candidates failed
         logger.info("[EXTRACTOR] Searching SoundCloud fallback for '%s'...", clean_query)
         sc_track = await loop.run_in_executor(
             None, self._extract_soundcloud, clean_query, requester_id, requester_name
         )
-        if sc_track and sc_track.stream_url:
-            is_valid, score, reason = validate_and_score_track(clean_input, sc_track)
-            if is_valid or score >= 0.2:
-                sc_track.is_video = False
-                sc_track.media_type = "audio"
-                ok, _ = await verify_media_file_with_ffmpeg(sc_track.playable_source or sc_track.stream_url)
+        if sc_track:
+            logger.info("[MATCH] candidate=\"%s\" (SoundCloud fallback)", sc_track.title)
+            await self.download_track(sc_track)
+            sc_source = sc_track.playable_source
+            sc_type = classify_media_source(sc_source)
+            if sc_type in ("LOCAL_FILE", "DIRECT_HTTP_MEDIA"):
+                ok, _ = await verify_media_file_with_ffmpeg(sc_source)
                 if ok:
-                    logger.info("[EXTRACTOR] SoundCloud fallback verified and selected: '%s' by %s", sc_track.title, sc_track.artist)
+                    sc_track.is_video = False
+                    sc_track.media_type = "audio"
+                    logger.info("[EXTRACTOR] SoundCloud fallback verified: '%s' by %s", sc_track.title, sc_track.artist)
                     return sc_track
 
-        logger.warning("[EXTRACTOR] No valid audio stream found for '%s'", clean_input)
+        logger.warning("[PLAYBACK_FAILED] No valid playable audio stream found for query: '%s'", clean_input)
         return None
 
     async def extract_video(
@@ -486,7 +553,7 @@ class MediaExtractor:
     async def search_tracks(
         self, query: str, limit: int = 5, requester_id: int = 0, requester_name: str = ""
     ) -> List[Track]:
-        """Searches top matching tracks across YouTube (ytInitialData + API v3), JioSaavn, and yt-dlp."""
+        """Searches top matching tracks across YouTube (ytInitialData + API v3), JioSaavn, and SoundCloud."""
         clean_input = query.strip()
         if not clean_input:
             return []
@@ -513,10 +580,15 @@ class MediaExtractor:
             None, self._extract_ytdlp_multi, clean_input, limit, requester_id, requester_name
         )
 
+        # 5. Search SoundCloud multi results via yt-dlp
+        sc_results = await loop.run_in_executor(
+            None, self._extract_soundcloud_multi, clean_input, limit, requester_id, requester_name
+        )
+
         combined: List[Track] = []
         seen_titles = set()
 
-        for tr in (yt_scraper_results + yt_api_results + jio_results + yt_results):
+        for tr in (yt_scraper_results + yt_api_results + jio_results + yt_results + sc_results):
             key = tr.title.lower().strip()
             if key not in seen_titles:
                 seen_titles.add(key)
@@ -695,24 +767,62 @@ class MediaExtractor:
                     for entry in (info.get("entries") or []):
                         if not entry:
                             continue
-                        stream_url = entry.get("url")
-                        if not stream_url or not isinstance(stream_url, str) or not stream_url.startswith(("http://", "https://")):
-                            continue
+                        vid_id = str(entry.get("id") or "")
                         tracks.append(
                             Track(
-                                track_id=str(entry.get("id") or uuid.uuid4().hex[:8]),
+                                track_id=f"yt_{vid_id or uuid.uuid4().hex[:8]}",
                                 title=sanitize_text(entry.get("title") or query, 80),
                                 artist=sanitize_text(entry.get("artist") or entry.get("uploader") or entry.get("channel"), 60) or "YouTube",
-                                duration=int(entry.get("duration") or 180),
+                                duration=int(entry.get("duration") or 210),
                                 thumbnail=entry.get("thumbnail") or DEFAULT_THUMBNAIL,
-                                source_url=entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}",
-                                stream_url=stream_url,
+                                source_url=entry.get("webpage_url") or (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"),
+                                stream_url=entry.get("url"),
+                                source="youtube",
                                 requester_user_id=requester_id,
                                 requester_name=requester_name,
                             )
                         )
         except Exception as e:
             logger.debug("yt-dlp multi search note: %s", str(e))
+        return tracks
+
+    def _extract_soundcloud_multi(
+        self, query: str, limit: int, requester_id: int, requester_name: str
+    ) -> List[Track]:
+        tracks = []
+        try:
+            import yt_dlp
+            opts = {
+                "format": "bestaudio/best",
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "socket_timeout": 8,
+                "logger": YtDlpQuietLogger(),
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
+                if info and "entries" in info:
+                    for entry in (info.get("entries") or []):
+                        if not entry:
+                            continue
+                        tracks.append(
+                            Track(
+                                track_id=f"sc_{str(entry.get('id') or uuid.uuid4().hex[:8])}",
+                                title=sanitize_text(entry.get("title") or query, 80),
+                                artist=sanitize_text(entry.get("uploader") or "SoundCloud", 60),
+                                duration=int(entry.get("duration") or 180),
+                                thumbnail=entry.get("thumbnail") or DEFAULT_THUMBNAIL,
+                                source_url=entry.get("webpage_url") or f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
+                                stream_url=entry.get("url"),
+                                source="soundcloud",
+                                requester_user_id=requester_id,
+                                requester_name=requester_name,
+                            )
+                        )
+        except Exception as e:
+            logger.debug("SoundCloud multi search note: %s", str(e))
         return tracks
 
     @staticmethod
@@ -950,10 +1060,23 @@ class MediaExtractor:
             if not success:
                 success = await loop.run_in_executor(None, self._download_ytdlp, track.source_url or source, local_path)
 
-        if success and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            track.local_filepath = local_path
-            logger.info("Extractor: Successfully downloaded track '%s' (size: %s bytes)", track.title, os.path.getsize(local_path))
-            return True
+        if success:
+            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                track.local_filepath = local_path
+                logger.info("Extractor: Successfully downloaded track '%s' (size: %s bytes)", track.title, os.path.getsize(local_path))
+                return True
+
+            # Check if yt-dlp created a file with a different audio extension in cache_dir
+            try:
+                for fname in os.listdir(cache_dir):
+                    if fname.startswith(f"{track.track_id}.") and not fname.endswith(".part"):
+                        fpath = os.path.join(cache_dir, fname)
+                        if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                            track.local_filepath = fpath
+                            logger.info("Extractor: Found downloaded audio file '%s' (size: %s bytes)", fpath, os.path.getsize(fpath))
+                            return True
+            except Exception:
+                pass
 
         logger.warning("Extractor: Failed to download track '%s'", track.title)
         return False

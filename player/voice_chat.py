@@ -115,6 +115,8 @@ def sanitize_and_prepare_session(session_str: str, api_id: int = 6) -> str:
 async def verify_media_file_with_ffmpeg(path_or_url: str) -> tuple[bool, str]:
     """
     Verifies if FFmpeg can successfully decode the media file or stream.
+    Strictly validates source type: only LOCAL_FILE and DIRECT_HTTP_MEDIA are allowed.
+    Rejects raw YouTube watch URLs and unknown sources immediately.
     Runs a fast test: ffmpeg -ss 00:00:00 -t 1 -i <file/URL> -f null -
     Returns (success, log_or_error_message).
     """
@@ -122,14 +124,24 @@ async def verify_media_file_with_ffmpeg(path_or_url: str) -> tuple[bool, str]:
     import os
     import shutil
 
+    if not path_or_url or not isinstance(path_or_url, str):
+        return False, "Invalid or missing media path/URL."
+
+    from player.models import classify_media_source
+
+    source_type = classify_media_source(path_or_url)
+    if source_type not in ("LOCAL_FILE", "DIRECT_HTTP_MEDIA"):
+        return (
+            False,
+            f"[FFMPEG VALIDATOR] Rejected source '{path_or_url}' (classified as {source_type}). "
+            f"Only LOCAL_FILE and DIRECT_HTTP_MEDIA can be decoded by FFmpeg."
+        )
+
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
         return False, "FFmpeg binary is not found on the system path."
 
-    if not path_or_url or not isinstance(path_or_url, str):
-        return False, "Invalid or missing media path/URL."
-
-    is_http = path_or_url.startswith(("http://", "https://"))
+    is_http = source_type == "DIRECT_HTTP_MEDIA"
     if not is_http:
         if not os.path.exists(path_or_url):
             return False, f"Local file does not exist: {path_or_url}"

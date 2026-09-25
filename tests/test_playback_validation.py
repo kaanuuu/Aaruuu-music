@@ -59,8 +59,8 @@ class TestPlaybackValidation(unittest.TestCase):
             stream_url=None,
             local_filepath=None,
         )
-        self.assertIsNotNone(t1.playable_source)
-        self.assertTrue(isinstance(t1.playable_source, str))
+        # Raw YouTube watch URL must NOT be returned as playable_source
+        self.assertIsNone(t1.playable_source)
 
         t2 = Track(
             track_id="t2",

@@ -306,7 +306,7 @@ async def _execute_playback_flow(message: Dict[str, Any], query_text: str, is_vi
     else:
         track = await extractor.extract(query_text, user_id, first_name)
 
-    if not track or not track.stream_url:
+    if not track or not track.playable_source:
         if is_video:
             fail_text = (
                 f"❌ {to_small_caps('could not extract playable video for')}: \"{sanitize_text(query_text, 35)}\"\n"
