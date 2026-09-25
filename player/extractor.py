@@ -205,15 +205,9 @@ class MediaExtractor:
             "youtube_include_hls_manifest": False,
             "no_color": True,
             "logger": YtDlpQuietLogger(),
-            # Emulate iOS & TV clients which are least affected by datacenter bot checks
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["ios", "android", "tv_embedded", "mweb"],
-                    "player_skip": ["webpage", "configs"],
-                }
-            },
+            "js_runtimes": {"node": {}},
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
             },
         }
@@ -990,14 +984,9 @@ class MediaExtractor:
                 "no_warnings": True,
                 "nocheckcertificate": True,
                 "logger": YtDlpQuietLogger(),
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["ios", "android", "tv_embedded", "mweb"],
-                        "player_skip": ["webpage", "configs"],
-                    }
-                },
+                "js_runtimes": {"node": {}},
                 "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept-Language": "en-US,en;q=0.9",
                 },
             }
@@ -1022,14 +1011,9 @@ class MediaExtractor:
                 "nocheckcertificate": True,
                 "logger": YtDlpQuietLogger(),
                 "socket_timeout": 15,
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["ios", "android", "tv_embedded", "mweb"],
-                        "player_skip": ["webpage", "configs"],
-                    }
-                },
+                "js_runtimes": {"node": {}},
                 "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept-Language": "en-US,en;q=0.9",
                 },
             }
@@ -1190,6 +1174,30 @@ class MediaExtractor:
                         success = await loop.run_in_executor(None, self._download_direct_url, download_source, local_path)
                     elif is_youtube_watch_url(download_source):
                         success = await loop.run_in_executor(None, self._download_ytdlp, download_source, local_path)
+
+            # Priority 5: Fallback search & download via SoundCloud or JioSaavn if YouTube/direct download failed
+            if not success and not is_video:
+                fallback_query = f"{track.artist} {track.title}" if track.artist and track.artist != "YouTube Music" else track.title
+                logger.info("[MEDIA] Primary download failed for '%s'. Initiating multi-provider fallback for query: '%s'", track.title, fallback_query)
+
+                # Attempt SoundCloud fallback via yt-dlp
+                sc_target = f"scsearch1:{fallback_query}"
+                success = await loop.run_in_executor(None, self._download_ytdlp, sc_target, local_path)
+                if success:
+                    logger.info("[MEDIA] Multi-provider fallback SoundCloud download succeeded for '%s'", track.title)
+                else:
+                    # Attempt JioSaavn fallback
+                    try:
+                        from player.providers.jiosaavn import jiosaavn_provider
+                        jio_tracks = await loop.run_in_executor(None, jiosaavn_provider.search, fallback_query, 3, track.requester_user_id, track.requester_name)
+                        for jt in jio_tracks:
+                            if jt.stream_url and is_direct_media_url(jt.stream_url):
+                                success = await loop.run_in_executor(None, self._download_direct_url, jt.stream_url, local_path)
+                                if success:
+                                    logger.info("[MEDIA] Multi-provider fallback JioSaavn download succeeded for '%s'", track.title)
+                                    break
+                    except Exception as e:
+                        logger.debug("[MEDIA] JioSaavn fallback note: %s", str(e))
 
             if success:
                 if os.path.exists(local_path) and os.path.getsize(local_path) > 0:

@@ -111,20 +111,21 @@ class YouTubeProvider(BaseProvider):
     def _get_attempt_configs(self) -> List[Dict[str, Any]]:
         """
         Returns sequential yt-dlp configurations to handle YouTube anti-bot / PO token mechanisms.
+        Includes Node.js JS runtime engine for signature decryption.
         """
         base_headers_desktop = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         }
         base_headers_mobile = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
             "Accept-Language": "en-US,en;q=0.9",
         }
 
         configs = [
-            # Attempt 1: Standard web/mweb/android
+            # Attempt 1: Standard web client with Node JS runtime
             {
-                "name": "mweb,web,android",
+                "name": "standard_web",
                 "opts": {
                     "format": "bestaudio/best",
                     "noplaylist": True,
@@ -133,18 +134,13 @@ class YouTubeProvider(BaseProvider):
                     "skip_download": True,
                     "socket_timeout": 8,
                     "logger": YtDlpQuietLogger(),
-                    "extractor_args": {
-                        "youtube": {
-                            "player_client": ["mweb", "web", "android"],
-                            "player_skip": ["configs"],
-                        }
-                    },
+                    "js_runtimes": {"node": {}},
                     "http_headers": base_headers_desktop,
                 },
             },
-            # Attempt 2: tv_embedded
+            # Attempt 2: Mobile / Android web client
             {
-                "name": "tv_embedded",
+                "name": "mobile_web",
                 "opts": {
                     "format": "bestaudio/best",
                     "noplaylist": True,
@@ -153,12 +149,7 @@ class YouTubeProvider(BaseProvider):
                     "skip_download": True,
                     "socket_timeout": 8,
                     "logger": YtDlpQuietLogger(),
-                    "extractor_args": {
-                        "youtube": {
-                            "player_client": ["tv_embedded"],
-                            "player_skip": ["webpage", "configs"],
-                        }
-                    },
+                    "js_runtimes": {"node": {}},
                     "http_headers": base_headers_mobile,
                 },
             },
@@ -176,9 +167,9 @@ class YouTubeProvider(BaseProvider):
                     "skip_download": True,
                     "socket_timeout": 8,
                     "logger": YtDlpQuietLogger(),
+                    "js_runtimes": {"node": {}},
                     "extractor_args": {
                         "youtube": {
-                            "player_client": ["web", "mweb"],
                             "po_token": [po_token],
                         }
                     },
