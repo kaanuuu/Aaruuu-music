@@ -792,12 +792,14 @@ class MediaExtractor:
                 "socket_timeout": 8,
                 "logger": YtDlpQuietLogger(),
             }
+            from player.providers.youtube import parse_audio_stream_from_entry
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
                 if info and "entries" in info:
                     for entry in (info.get("entries") or []):
                         if not entry:
                             continue
+                        stream_url, _, _ = parse_audio_stream_from_entry(entry)
                         tracks.append(
                             Track(
                                 track_id=f"sc_{str(entry.get('id') or uuid.uuid4().hex[:8])}",
@@ -806,7 +808,7 @@ class MediaExtractor:
                                 duration=int(entry.get("duration") or 180),
                                 thumbnail=entry.get("thumbnail") or DEFAULT_THUMBNAIL,
                                 source_url=entry.get("webpage_url") or f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
-                                stream_url=entry.get("url"),
+                                stream_url=stream_url or entry.get("url"),
                                 source="soundcloud",
                                 requester_user_id=requester_id,
                                 requester_name=requester_name,
@@ -893,18 +895,21 @@ class MediaExtractor:
             "logger": YtDlpQuietLogger(),
         }
         try:
+            from player.providers.youtube import parse_audio_stream_from_entry
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"scsearch1:{query}", download=False)
                 if info and "entries" in info and info["entries"]:
                     entry = info["entries"][0]
+                    stream_url, _, _ = parse_audio_stream_from_entry(entry)
                     return Track(
-                        track_id=str(entry.get("id") or uuid.uuid4().hex[:8]),
+                        track_id=f"sc_{str(entry.get('id') or uuid.uuid4().hex[:8])}",
                         title=sanitize_text(entry.get("title") or query, 80),
                         artist=sanitize_text(entry.get("uploader") or "SoundCloud", 60),
                         duration=int(entry.get("duration") or 180),
                         thumbnail=entry.get("thumbnail") or DEFAULT_THUMBNAIL,
                         source_url=entry.get("webpage_url") or f"https://soundcloud.com/search?q={urllib.parse.quote(query)}",
-                        stream_url=entry.get("url"),
+                        stream_url=stream_url or entry.get("url"),
+                        source="soundcloud",
                         requester_user_id=requester_id,
                         requester_name=requester_name,
                     )

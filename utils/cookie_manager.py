@@ -103,10 +103,26 @@ def log_cookie_status_at_startup() -> None:
     _LOGGED_STARTUP_STATUS = True
 
     cfile = get_youtube_cookie_file()
-    if cfile:
-        logger.info("[YOUTUBE] cookies_configured=true file_path=%s", cfile)
+    if cfile and os.path.exists(cfile):
+        try:
+            readable = os.access(cfile, os.R_OK)
+            entries = 0
+            with open(cfile, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line_str = line.strip()
+                    if line_str and not line_str.startswith("#"):
+                        parts = re.split(r"\s+", line_str)
+                        if len(parts) >= 6:
+                            entries += 1
+            logger.info(
+                "[YTDLP] cookies_configured=true cookiefile_configured=true cookie_file_exists=true cookie_file_readable=%s cookie_entries=%d",
+                str(readable).lower(),
+                entries,
+            )
+        except Exception as e:
+            logger.info("[YTDLP] cookies_configured=true cookiefile_configured=true (reading stats error: %s)", str(e))
     else:
-        logger.info("[YOUTUBE] cookies_configured=false")
+        logger.info("[YTDLP] cookies_configured=false cookiefile_configured=false")
 
 
 def cleanup_cookie_files() -> None:

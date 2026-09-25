@@ -48,12 +48,59 @@ def classify_youtube_exception(e: Exception) -> str:
     return "EXTRACTION_ERROR"
 
 
+def parse_audio_stream_from_entry(entry: Dict[str, Any]) -> Tuple[Optional[str], int, int]:
+    """
+    Inspects yt-dlp entry dictionary and selects the best playable audio stream URL.
+    Returns (stream_url, total_formats_count, audio_formats_count).
+    """
+    from player.models import is_youtube_watch_url, is_direct_media_url
+
+    formats = entry.get("formats") or []
+    total_count = len(formats)
+
+    # 1. Check top-level url property if it's already a direct media URL
+    direct_prop = entry.get("url")
+    if direct_prop and isinstance(direct_prop, str) and is_direct_media_url(direct_prop) and not is_youtube_watch_url(direct_prop):
+        return direct_prop, total_count, total_count
+
+    # 2. Inspect formats for audio-only streams
+    audio_formats = []
+    for f in formats:
+        f_url = f.get("url")
+        if not f_url or not isinstance(f_url, str):
+            continue
+        if is_youtube_watch_url(f_url) or not is_direct_media_url(f_url):
+            continue
+        acodec = f.get("acodec")
+        vcodec = f.get("vcodec")
+        if acodec not in (None, "none", "None"):
+            audio_formats.append(f)
+
+    audio_count = len(audio_formats)
+    if audio_formats:
+        # Sort by audio bitrate (abr or tbr)
+        audio_formats.sort(key=lambda x: (x.get("abr") or x.get("tbr") or x.get("quality") or 0), reverse=True)
+        return audio_formats[0]["url"], total_count, audio_count
+
+    # 3. Fallback to any valid direct media stream format
+    any_formats = [
+        f for f in formats
+        if f.get("url") and isinstance(f.get("url"), str) and is_direct_media_url(f.get("url")) and not is_youtube_watch_url(f.get("url"))
+    ]
+    if any_formats:
+        any_formats.sort(key=lambda x: (x.get("tbr") or x.get("abr") or 0), reverse=True)
+        return any_formats[0]["url"], total_count, 0
+
+    return None, total_count, 0
+
+
 class YouTubeProvider(BaseProvider):
     """Encapsulates all YouTube metadata extraction and direct audio stream parsing."""
 
     def __init__(self):
         log_cookie_status_at_startup()
         self.cookies_path = get_youtube_cookie_file()
+        self.last_error: Optional[str] = None
 
     def get_po_token_status(self) -> str:
         po_tok = os.getenv("YTDLP_PO_TOKEN") or os.getenv("PO_TOKEN")
@@ -75,7 +122,7 @@ class YouTubeProvider(BaseProvider):
         }
 
         configs = [
-            # Attempt 1: Default/mweb/web/android
+            # Attempt 1: Standard web/mweb/android
             {
                 "name": "mweb,web,android",
                 "opts": {
@@ -95,9 +142,9 @@ class YouTubeProvider(BaseProvider):
                     "http_headers": base_headers_desktop,
                 },
             },
-            # Attempt 2: ios,tv_embedded
+            # Attempt 2: tv_embedded
             {
-                "name": "ios,tv_embedded",
+                "name": "tv_embedded",
                 "opts": {
                     "format": "bestaudio/best",
                     "noplaylist": True,
@@ -108,7 +155,7 @@ class YouTubeProvider(BaseProvider):
                     "logger": YtDlpQuietLogger(),
                     "extractor_args": {
                         "youtube": {
-                            "player_client": ["ios", "tv_embedded"],
+                            "player_client": ["tv_embedded"],
                             "player_skip": ["webpage", "configs"],
                         }
                     },
@@ -131,7 +178,7 @@ class YouTubeProvider(BaseProvider):
                     "logger": YtDlpQuietLogger(),
                     "extractor_args": {
                         "youtube": {
-                            "player_client": ["web", "mweb", "ios"],
+                            "player_client": ["web", "mweb"],
                             "po_token": [po_token],
                         }
                     },
@@ -153,45 +200,52 @@ class YouTubeProvider(BaseProvider):
             import yt_dlp
         except ImportError:
             logger.warning("[PROVIDER-YOUTUBE] yt_dlp is not installed!")
+            self.last_error = "YTDLP_NOT_INSTALLED"
             return None
 
         search_query = target if is_url else f"ytsearch1:{target}"
         configs = self._get_attempt_configs()
+        has_cookies = bool(self.cookies_path and os.path.exists(self.cookies_path))
+
+        logger.info("[YTDLP] cookies_configured=%s cookiefile_configured=%s", str(has_cookies).lower(), str(has_cookies).lower())
 
         for idx, cfg in enumerate(configs, 1):
             cfg_name = cfg["name"]
             opts = cfg["opts"]
-            logger.info("[YOUTUBE] extraction attempt=%d", idx)
-            logger.info("[YOUTUBE] client/config=\"%s\"", cfg_name)
+            logger.info("[YOUTUBE] extraction_started target=\"%s\" attempt=%d config=\"%s\"", sanitize_text(target, 40), idx, cfg_name)
 
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(search_query, download=False)
                     if not info:
-                        logger.info("[YOUTUBE] result=failure")
-                        logger.info("[YOUTUBE] stream_url=missing")
+                        logger.info("[YOUTUBE] extraction_result=empty_info")
                         continue
 
                     entries = list(info.get("entries") or [info]) if "entries" in info else [info]
                     entry = entries[0] if entries else None
                     if not entry:
-                        logger.info("[YOUTUBE] result=failure")
-                        logger.info("[YOUTUBE] stream_url=missing")
+                        logger.info("[YOUTUBE] extraction_result=empty_entry")
                         continue
 
-                    webpage_url = entry.get("webpage_url") or target
-                    stream_url = entry.get("url")
+                    video_id = entry.get("id") or "unknown"
+                    webpage_url = entry.get("webpage_url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id != "unknown" else target)
 
-                    from player.models import is_youtube_watch_url, is_direct_media_url
+                    stream_url, total_fmt, audio_fmt = parse_audio_stream_from_entry(entry)
 
-                    # Reject missing, watch URLs, or non-direct media URLs
-                    if not stream_url or is_youtube_watch_url(stream_url) or not is_direct_media_url(stream_url):
-                        logger.info("[YOUTUBE] result=failure")
-                        logger.info("[YOUTUBE] stream_url=missing")
+                    logger.info(
+                        "[YTDLP] video_id=%s total_formats=%d audio_formats=%d direct_url_present=%s",
+                        video_id,
+                        total_fmt,
+                        audio_fmt,
+                        str(bool(stream_url)).lower(),
+                    )
+
+                    if not stream_url:
+                        logger.info("[YTDLP] direct_stream_present=false reason=NO_AUDIO_FORMAT")
+                        self.last_error = "NO_AUDIO_FORMAT"
                         continue
 
-                    logger.info("[YOUTUBE] result=success")
-                    logger.info("[YOUTUBE] stream_url=present")
+                    logger.info("[YTDLP] direct_stream_present=true direct_stream_is_webpage=false")
 
                     title = sanitize_text(entry.get("title") or target, 80)
                     artist = (
@@ -202,7 +256,7 @@ class YouTubeProvider(BaseProvider):
                     thumbnail = entry.get("thumbnail") or DEFAULT_THUMBNAIL
 
                     return Track(
-                        track_id=f"yt_{entry.get('id') or uuid.uuid4().hex[:8]}",
+                        track_id=f"yt_{video_id}",
                         title=title,
                         artist=artist,
                         duration=duration,
@@ -214,9 +268,8 @@ class YouTubeProvider(BaseProvider):
                     )
             except Exception as e:
                 err_type = classify_youtube_exception(e)
-                logger.info("[YOUTUBE] result=failure error_type=%s", err_type)
-                logger.info("[YOUTUBE] stream_url=missing")
-                logger.info("[MEDIA] youtube_error_type=%s", err_type)
+                self.last_error = err_type
+                logger.info("[YTDLP] extraction_failed type=%s reason=\"%s\"", type(e).__name__, err_type)
                 logger.debug("[YOUTUBE] Attempt %d (%s) exception: %s", idx, cfg_name, str(e))
 
         return None
