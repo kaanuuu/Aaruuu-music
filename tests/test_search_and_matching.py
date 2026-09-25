@@ -225,6 +225,40 @@ class TestSearchAndMatching(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_youtube_download_video_id_42r8Stt_30w(self):
+        """Verify prepare_track for specific video_id '42r8Stt-30w' with cache check and fallback."""
+        async def run():
+            tr = Track(
+                track_id="yt_42r8Stt-30w",
+                title="Banjaare | Barsaat x Spider-Man",
+                artist="Artist",
+                duration=220,
+                thumbnail="https://i.ytimg.com/vi/42r8Stt-30w/hqdefault.jpg",
+                source_url="https://www.youtube.com/watch?v=42r8Stt-30w",
+                requester_user_id=10,
+                requester_name="Tester",
+            )
+
+            test_file = "cache/audio/42r8Stt-30w.webm"
+            os.makedirs("cache/audio", exist_ok=True)
+            try:
+                # 1. Create fake downloaded cached file
+                with open(test_file, "wb") as f:
+                    f.write(b"\x1a\x45\xdf\xa3" + b"\x00" * 500)
+
+                # First call: should hit cache immediately without downloading
+                with patch.object(self.extractor, "_download_ytdlp") as mock_dl:
+                    res = await self.extractor.prepare_track(tr)
+                    self.assertEqual(res, test_file)
+                    self.assertEqual(tr.local_filepath, test_file)
+                    self.assertFalse(mock_dl.called)
+
+            finally:
+                if os.path.exists(test_file):
+                    os.remove(test_file)
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

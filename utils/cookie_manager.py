@@ -127,15 +127,26 @@ def log_cookie_status_at_startup() -> None:
         return
     _LOGGED_STARTUP_STATUS = True
 
+    try:
+        import yt_dlp
+        ytdlp_ver = getattr(yt_dlp, "__version__", "unknown")
+    except Exception:
+        ytdlp_ver = "unknown"
+
     status_code = get_cookie_diagnostic_status()
     cfile = get_youtube_cookie_file()
     has_cookies = status_code == "COOKIES_READY"
+    cookie_size = os.path.getsize(cfile) if (cfile and os.path.exists(cfile)) else 0
+    cookie_format = "valid" if has_cookies else "invalid" if status_code == "COOKIES_INVALID" else "none"
 
+    logger.info("[YTDLP] version=%s", ytdlp_ver)
     logger.info(
-        "[YTDLP] cookies_status=%s cookies_configured=%s cookiefile_configured=%s",
+        "[YTDLP] cookies_status=%s cookies_configured=%s cookie_file_created=%s cookie_file_size=%d cookie_file_format=%s",
         status_code,
-        str(has_cookies).lower(),
-        str(has_cookies).lower(),
+        "yes" if has_cookies else "no",
+        "yes" if cfile and os.path.exists(cfile) else "no",
+        cookie_size,
+        cookie_format,
     )
 
 

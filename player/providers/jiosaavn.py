@@ -48,7 +48,7 @@ class JioSaavnProvider:
 
         for base in bases:
             url = f"{base}{endpoint}"
-            logger.info("[JIOSAAVN] Querying endpoint: %s", url)
+            logger.debug("[JIOSAAVN] Querying endpoint: %s", url)
             try:
                 req = urllib.request.Request(
                     url,
@@ -62,7 +62,7 @@ class JioSaavnProvider:
                             self.api_base = base
                             return data
             except Exception as e:
-                logger.warning("[JIOSAAVN] Endpoint failed '%s': %s", url, str(e))
+                logger.debug("[JIOSAAVN] Endpoint note '%s': %s", url, str(e))
         return None
 
     def _normalize_track(self, item: Dict[str, Any], requester_id: int = 0, requester_name: str = "Aaruu Music") -> Optional[Track]:
