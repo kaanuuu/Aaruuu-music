@@ -279,8 +279,10 @@ class MediaExtractor:
         self, query_or_url: str, requester_id: int, requester_name: str
     ) -> Optional[Track]:
         """
-        Extracts verified audio track with strict matching, short-clip rejection, and multi-provider cascade.
-        Never blindly accepts the first search result. Validates title, artist, duration, and playable audio.
+        Search & Track Resolution Pipeline:
+        Resolves query to candidate Track metadata (video_id, title, artist, source_url)
+        without attempting media download or stream extraction at this stage.
+        The returned Track is then passed to prepare_track() for local caching/download.
         """
         clean_input = query_or_url.strip()
         if not clean_input:
@@ -298,39 +300,59 @@ class MediaExtractor:
                     candidate = tracks[0]
                     candidate.is_video = False
                     candidate.media_type = "audio"
-                    is_valid, _, reason = validate_and_score_track(clean_input, candidate)
-                    if is_valid:
-                        return candidate
-                    else:
-                        logger.warning("[EXTRACTOR] JioSaavn URL track rejected: %s", reason)
+                    return candidate
             except Exception as e:
                 logger.warning("[EXTRACTOR] JioSaavn URL resolution failed: %s", str(e))
 
-        # Case 2: Direct YouTube URL
-        if ("youtu.be/" in clean_input or "youtube.com/watch" in clean_input) and is_url:
+        # Case 2: Direct YouTube URL or Video ID
+        match = re.search(r"(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})", clean_input)
+        if match or (("youtu.be/" in clean_input or "youtube.com/watch" in clean_input) and is_url):
+            vid_id = match.group(1) if match else "unknown"
             yt_meta = await loop.run_in_executor(None, self._extract_youtube_meta, clean_input)
-            from player.providers.youtube import youtube_provider
-            ytdl_track = await loop.run_in_executor(
-                None, youtube_provider._extract_ytdlp, clean_input, True, requester_id, requester_name
+            thumb = (yt_meta.get("thumbnail") if yt_meta else None) or f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
+            title = (yt_meta.get("title") if yt_meta else None) or f"YouTube Track ({vid_id})"
+            artist = (yt_meta.get("artist") if yt_meta else None) or "YouTube Artist"
+            return Track(
+                track_id=f"yt_{vid_id}",
+                title=title,
+                artist=artist,
+                duration=210,
+                thumbnail=thumb,
+                source_url=f"https://www.youtube.com/watch?v={vid_id}" if vid_id != "unknown" else clean_input,
+                stream_url=None,
+                requester_user_id=requester_id,
+                requester_name=requester_name,
+                is_video=False,
+                media_type="audio",
             )
-            if ytdl_track and ytdl_track.stream_url:
-                if yt_meta:
-                    ytdl_track.thumbnail = yt_meta.get("thumbnail") or ytdl_track.thumbnail
-                    ytdl_track.title = yt_meta.get("title") or ytdl_track.title
-                    ytdl_track.artist = yt_meta.get("artist") or ytdl_track.artist
-                ytdl_track.is_video = False
-                ytdl_track.media_type = "audio"
-                is_valid, _, reason = validate_and_score_track(clean_input, ytdl_track)
-                if is_valid:
-                    ok, _ = await verify_media_file_with_ffmpeg(ytdl_track.playable_source or ytdl_track.stream_url)
-                    if ok:
-                        return ytdl_track
 
-        # Case 3: Music Search Query (Multi-provider search + score-based selection)
+        # Case 3: Music Search Query
         clean_query = self._clean_search_query(clean_input) or clean_input
         logger.info("[EXTRACTOR] Multi-candidate search for query: '%s' (cleaned: '%s')", clean_input, clean_query)
 
-        # 1. Search JioSaavn for candidate tracks
+        # 1. Search YouTube scraper for candidate tracks (fastest, zero-API)
+        yt_candidates: List[Track] = []
+        try:
+            yt_candidates = await loop.run_in_executor(
+                None, self._search_youtube_ytinitialdata, clean_input, 5, requester_id, requester_name
+            )
+            for y in yt_candidates:
+                y.source = "youtube"
+        except Exception as e:
+            logger.debug("[EXTRACTOR] YouTube scraper search note: %s", str(e))
+
+        # 2. Search YouTube API v3
+        yt_api_candidates: List[Track] = []
+        try:
+            yt_api_candidates = await loop.run_in_executor(
+                None, self._search_youtube_api_v3, clean_input, 5, requester_id, requester_name
+            )
+            for y in yt_api_candidates:
+                y.source = "youtube"
+        except Exception as e:
+            logger.debug("[EXTRACTOR] YouTube API search note: %s", str(e))
+
+        # 3. Search JioSaavn for candidate tracks
         jio_candidates: List[Track] = []
         try:
             jio_candidates = await loop.run_in_executor(
@@ -341,18 +363,7 @@ class MediaExtractor:
         except Exception as e:
             logger.debug("[EXTRACTOR] JioSaavn search note: %s", str(e))
 
-        # 2. Search YouTube scraper for candidate tracks
-        yt_candidates: List[Track] = []
-        try:
-            yt_candidates = await loop.run_in_executor(
-                None, self._search_youtube_ytinitialdata, clean_query, 5, requester_id, requester_name
-            )
-            for y in yt_candidates:
-                y.source = "youtube"
-        except Exception as e:
-            logger.debug("[EXTRACTOR] YouTube scraper search note: %s", str(e))
-
-        # 3. Search yt-dlp YouTube
+        # 4. Search yt-dlp YouTube
         yt_dlp_candidates: List[Track] = []
         try:
             yt_dlp_candidates = await loop.run_in_executor(
@@ -361,7 +372,7 @@ class MediaExtractor:
         except Exception as e:
             logger.debug("[EXTRACTOR] yt-dlp multi search note: %s", str(e))
 
-        # 4. Search SoundCloud candidates
+        # 5. Search SoundCloud candidates
         sc_candidates: List[Track] = []
         try:
             sc_candidates = await loop.run_in_executor(
@@ -370,13 +381,15 @@ class MediaExtractor:
         except Exception as e:
             logger.debug("[EXTRACTOR] SoundCloud multi search note: %s", str(e))
 
-        all_candidates = jio_candidates + yt_candidates + yt_dlp_candidates + sc_candidates
+        all_candidates = yt_candidates + yt_api_candidates + jio_candidates + yt_dlp_candidates + sc_candidates
         logger.info(
-            "[SEARCH] query=\"%s\" provider=\"multi\" results=%d (jio=%d, yt_scrape=%d, yt_dlp=%d, sc=%d)",
+            "[SEARCH] QUERY: \"%s\" YOUTUBE_RESULTS: %d CANDIDATES_TOTAL: %d (yt_scrape=%d, yt_api=%d, jio=%d, yt_dlp=%d, sc=%d)",
             clean_input,
+            len(yt_candidates) + len(yt_api_candidates) + len(yt_dlp_candidates),
             len(all_candidates),
-            len(jio_candidates),
             len(yt_candidates),
+            len(yt_api_candidates),
+            len(jio_candidates),
             len(yt_dlp_candidates),
             len(sc_candidates),
         )
@@ -386,9 +399,7 @@ class MediaExtractor:
             logger.warning("[SEARCH_FAILED] No search results returned from any provider for: '%s'", clean_input)
             return None
 
-        self.last_extraction_status = "MATCH_FOUND_BUT_EXTRACTION_FAILED"
-
-        # 5. Score and filter candidates against query
+        # Score and filter candidates against query
         scored_candidates: List[Tuple[float, Track]] = []
         seen_cand_ids = set()
         for cand in all_candidates:
@@ -398,10 +409,21 @@ class MediaExtractor:
             is_valid, score, reason = validate_and_score_track(clean_input, cand)
             if is_valid:
                 scored_candidates.append((score, cand))
+                logger.info(
+                    "[CANDIDATE] title=\"%s\" video_id=\"%s\" url_type=youtube_watch accepted=yes score=%.2f",
+                    sanitize_text(cand.title, 40),
+                    cand.track_id,
+                    score,
+                )
             else:
-                logger.debug("[EXTRACTOR] Filtered candidate '%s': %s", cand.title, reason)
+                logger.info(
+                    "[CANDIDATE] title=\"%s\" video_id=\"%s\" url_type=youtube_watch accepted=no reject_reason=\"%s\"",
+                    sanitize_text(cand.title, 40),
+                    cand.track_id,
+                    reason,
+                )
 
-        # If strict scoring rejected all, allow highest-overlap candidate
+        # Fallback: if strict scoring rejected all, allow candidate with highest match
         if not scored_candidates and all_candidates:
             logger.info("[EXTRACTOR] Strict validation filter fallback: evaluating all %d candidates", len(all_candidates))
             for cand in all_candidates:
@@ -415,80 +437,24 @@ class MediaExtractor:
         # Sort highest score first
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        # 6. Iterate through ranked candidates, extract/download audio, and verify with FFmpeg
-        from player.models import classify_media_source
-
-        for score, cand in scored_candidates:
-            logger.info(
-                "[MATCH] candidate=\"%s\" video_id=\"%s\" url=\"%s\" source=\"%s\" score=%.2f",
-                cand.title,
-                cand.track_id,
-                cand.source_url,
-                getattr(cand, "source", "unknown"),
-                score,
-            )
-            logger.info("[EXTRACTOR] status=started candidate=\"%s\"", cand.title)
-
-            # Download track to local cache for resilient playback
-            download_ok = await self.download_track(cand)
-
-            cand_source = cand.playable_source
-            source_type = classify_media_source(cand_source)
-
-            # Strict source check: Never pass raw YouTube watch URLs to FFmpeg
-            if source_type in ("LOCAL_FILE", "DIRECT_HTTP_MEDIA"):
-                logger.info("[EXTRACTOR] status=success candidate=\"%s\"", cand.title)
-                logger.info("[SOURCE] type=%s path=\"%s\"", source_type, cand_source)
-
-                # Validate media decoding with FFmpeg
-                ok, log = await verify_media_file_with_ffmpeg(cand_source)
-                if ok:
-                    cand.is_video = False
-                    cand.media_type = "audio"
-                    logger.info(
-                        "[EXTRACTOR] Selected and verified track: '%s' by %s (Score: %.2f)",
-                        cand.title,
-                        cand.artist,
-                        score,
-                    )
-                    return cand
-                else:
-                    logger.warning("[EXTRACTOR] Candidate '%s' failed FFmpeg validation: %s", cand.title, log)
-            else:
-                logger.warning(
-                    "[EXTRACTION_FAILED] Candidate '%s' playable_source classified as %s (not LOCAL_FILE/DIRECT_HTTP_MEDIA)",
-                    cand.title,
-                    source_type,
-                )
-
-        # 7. Fallback to direct SoundCloud search if all previous candidates failed
-        logger.info("[EXTRACTOR] Searching SoundCloud fallback for '%s'...", clean_query)
-        sc_track = await loop.run_in_executor(
-            None, self._extract_soundcloud, clean_query, requester_id, requester_name
+        top_score, top_cand = scored_candidates[0]
+        top_cand.is_video = False
+        top_cand.media_type = "audio"
+        logger.info(
+            "[SEARCH_SUCCESS] Selected top candidate: title=\"%s\" video_id=\"%s\" source=\"%s\" score=%.2f",
+            top_cand.title,
+            top_cand.track_id,
+            getattr(top_cand, "source", "youtube"),
+            top_score,
         )
-        if sc_track:
-            logger.info("[MATCH] candidate=\"%s\" (SoundCloud fallback)", sc_track.title)
-            await self.download_track(sc_track)
-            sc_source = sc_track.playable_source
-            sc_type = classify_media_source(sc_source)
-            if sc_type in ("LOCAL_FILE", "DIRECT_HTTP_MEDIA"):
-                ok, _ = await verify_media_file_with_ffmpeg(sc_source)
-                if ok:
-                    sc_track.is_video = False
-                    sc_track.media_type = "audio"
-                    logger.info("[EXTRACTOR] SoundCloud fallback verified: '%s' by %s", sc_track.title, sc_track.artist)
-                    return sc_track
-
-        logger.warning("[PLAYBACK_FAILED] No valid playable audio stream found for query: '%s'", clean_input)
-        return None
+        return top_cand
 
     async def extract_video(
         self, query_or_url: str, requester_id: int, requester_name: str
     ) -> Optional[Track]:
         """
-        Extracts verified video track for /vplay command.
-        Searches YouTube for video, verifies stream with FFmpeg, and rejects Shorts/clips.
-        Never passes watch-page URL directly to FFmpeg.
+        Extracts top video candidate metadata for /vplay command.
+        The returned Track is passed to prepare_track(is_video=True) for local video caching/download.
         """
         clean_input = query_or_url.strip()
         if not clean_input:
@@ -496,29 +462,36 @@ class MediaExtractor:
 
         is_url = bool(re.match(r"^https?://", clean_input, re.IGNORECASE))
         loop = asyncio.get_running_loop()
-        from player.providers.youtube import youtube_provider
 
-        # Direct YouTube URL
-        if is_url:
-            track = await loop.run_in_executor(
-                None, youtube_provider._extract_video_ytdlp, clean_input, True, requester_id, requester_name
+        # Direct YouTube URL or Video ID
+        match = re.search(r"(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})", clean_input)
+        if match or (("youtu.be/" in clean_input or "youtube.com/watch" in clean_input) and is_url):
+            vid_id = match.group(1) if match else "unknown"
+            yt_meta = await loop.run_in_executor(None, self._extract_youtube_meta, clean_input)
+            thumb = (yt_meta.get("thumbnail") if yt_meta else None) or f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
+            title = (yt_meta.get("title") if yt_meta else None) or f"YouTube Video ({vid_id})"
+            artist = (yt_meta.get("artist") if yt_meta else None) or "YouTube Channel"
+            return Track(
+                track_id=f"ytv_{vid_id}",
+                title=title,
+                artist=artist,
+                duration=240,
+                thumbnail=thumb,
+                source_url=f"https://www.youtube.com/watch?v={vid_id}" if vid_id != "unknown" else clean_input,
+                stream_url=None,
+                requester_user_id=requester_id,
+                requester_name=requester_name,
+                is_video=True,
+                media_type="video",
             )
-            if track and track.stream_url:
-                track.is_video = True
-                track.media_type = "video"
-                ok, log = await verify_media_file_with_ffmpeg(track.playable_source or track.stream_url)
-                if ok:
-                    return track
-                logger.warning("[EXTRACTOR-VIDEO] Direct URL failed verification: %s", log)
-            return None
 
         # Text query: search YouTube videos
         clean_query = self._clean_search_query(clean_input) or clean_input
-        logger.info("[EXTRACTOR-VIDEO] Searching YouTube video for query: '%s'", clean_query)
+        logger.info("[EXTRACTOR-VIDEO] Searching YouTube video candidate for query: '%s'", clean_query)
 
         # Scrape top candidates
         candidates = await loop.run_in_executor(
-            None, self._search_youtube_ytinitialdata, clean_query, 5, requester_id, requester_name
+            None, self._search_youtube_ytinitialdata, clean_input, 5, requester_id, requester_name
         )
 
         scored_candidates: List[Tuple[float, Track]] = []
@@ -527,35 +500,21 @@ class MediaExtractor:
             if is_valid:
                 scored_candidates.append((score, cand))
 
+        if not scored_candidates and candidates:
+            for cand in candidates:
+                scored_candidates.append((0.1, cand))
+
+        if not scored_candidates:
+            logger.warning("[EXTRACTOR-VIDEO] No valid video found for '%s'", clean_input)
+            return None
+
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
-
-        for score, cand in scored_candidates:
-            video_track = await loop.run_in_executor(
-                None, youtube_provider._extract_video_ytdlp, cand.source_url, True, requester_id, requester_name
-            )
-            if video_track and video_track.stream_url:
-                video_track.is_video = True
-                video_track.media_type = "video"
-                ok, log = await verify_media_file_with_ffmpeg(video_track.playable_source or video_track.stream_url)
-                if ok:
-                    logger.info("[EXTRACTOR-VIDEO] Selected video track '%s' (Score: %.2f)", video_track.title, score)
-                    return video_track
-                else:
-                    logger.warning("[EXTRACTOR-VIDEO] Candidate '%s' failed FFmpeg check: %s", video_track.title, log)
-
-        # Final attempt: direct search with yt-dlp
-        direct_yt = await loop.run_in_executor(
-            None, youtube_provider._extract_video_ytdlp, clean_input, False, requester_id, requester_name
-        )
-        if direct_yt and direct_yt.stream_url:
-            direct_yt.is_video = True
-            direct_yt.media_type = "video"
-            ok, _ = await verify_media_file_with_ffmpeg(direct_yt.playable_source or direct_yt.stream_url)
-            if ok:
-                return direct_yt
-
-        logger.warning("[EXTRACTOR-VIDEO] No valid video found for '%s'", clean_input)
-        return None
+        top_vid = scored_candidates[0][1]
+        top_vid.is_video = True
+        top_vid.media_type = "video"
+        top_vid.track_id = f"ytv_{top_vid.track_id.replace('yt_', '')}"
+        logger.info("[EXTRACTOR-VIDEO] Selected top video candidate: '%s'", top_vid.title)
+        return top_vid
 
     async def search_tracks(
         self, query: str, limit: int = 5, requester_id: int = 0, requester_name: str = ""

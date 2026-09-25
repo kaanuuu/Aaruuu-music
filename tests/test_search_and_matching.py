@@ -207,12 +207,15 @@ class TestSearchAndMatching(unittest.TestCase):
                 )
 
                 with patch.object(self.extractor, "_search_youtube_ytinitialdata", return_value=[cand]), \
-                     patch.object(self.extractor, "download_track", new=AsyncMock(side_effect=lambda t: setattr(t, "local_filepath", dummy_mp3) or True)), \
+                     patch.object(self.extractor, "prepare_track", new=AsyncMock(side_effect=lambda t, is_video=False: setattr(t, "local_filepath", dummy_mp3) or dummy_mp3)), \
                      patch("player.extractor.verify_media_file_with_ffmpeg", new=AsyncMock(return_value=(True, "OK"))):
 
                     extracted = await self.extractor.extract("barsaat", 10, "Tester")
                     self.assertIsNotNone(extracted)
                     self.assertEqual(extracted.title, "Barsaat - Banjaare")
+                    
+                    local_path = await self.extractor.prepare_track(extracted)
+                    self.assertEqual(local_path, dummy_mp3)
                     self.assertEqual(extracted.playable_source, dummy_mp3)
                     self.assertEqual(classify_media_source(extracted.playable_source), "LOCAL_FILE")
 
