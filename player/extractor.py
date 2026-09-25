@@ -970,7 +970,6 @@ class MediaExtractor:
                 "socket_timeout": 20,
                 "continuedl": True,
                 "js_runtimes": {"node": {}},
-                "extractor_args": {"youtube": {"player_client": ["mweb", "web_embedded", "android", "ios", "web"]}},
                 "logger": YtDlpQuietLogger(),
             }
             cookie_file = self.cookies_path if use_cookies else None
@@ -1017,7 +1016,6 @@ class MediaExtractor:
                 "socket_timeout": 20,
                 "continuedl": True,
                 "js_runtimes": {"node": {}},
-                "extractor_args": {"youtube": {"player_client": ["mweb", "web_embedded", "android", "ios", "web"]}},
                 "logger": YtDlpQuietLogger(),
             }
             cookie_file = self.cookies_path if use_cookies else None
@@ -1047,6 +1045,45 @@ class MediaExtractor:
                 sanitized_err[:250],
                 "cookies" if (use_cookies and self.cookies_path) else "no_cookies",
             )
+            return False
+
+    def _download_soundcloud_fallback(self, search_target: str, dest_path: str, video_id: str = "unknown") -> bool:
+        try:
+            import yt_dlp
+            opts = {
+                "format": "bestaudio/best",
+                "outtmpl": dest_path,
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "nocheckcertificate": True,
+                "retries": 2,
+                "fragment_retries": 2,
+                "socket_timeout": 15,
+                "continuedl": True,
+                "logger": YtDlpQuietLogger(),
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(search_target, download=False)
+                entries = info.get("entries", []) if info else []
+                for entry in entries:
+                    if not entry:
+                        continue
+                    url = entry.get("webpage_url") or entry.get("permalink_url")
+                    if url and "api.soundcloud.com" not in url and "soundcloud.com/" in url:
+                        logger.info("[MEDIA] Downloading SoundCloud fallback clean URL: %s", url)
+                        ydl.download([url])
+                        parent_dir = os.path.dirname(dest_path)
+                        prefix = os.path.splitext(os.path.basename(dest_path))[0]
+                        if os.path.exists(parent_dir):
+                            for fname in os.listdir(parent_dir):
+                                if fname.startswith(prefix + ".") and not fname.endswith(".part") and not fname.endswith(".ytdl"):
+                                    fpath = os.path.join(parent_dir, fname)
+                                    if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                                        return True
+            return False
+        except Exception as e:
+            logger.warning("[YTDLP_ERROR] SoundCloud fallback failed for %s: %s", video_id, str(e))
             return False
 
     def _clean_cache_dir(self, cache_dir: str = "/tmp/aaruu_cache", max_files: int = 100, max_size_bytes: int = 500 * 1024 * 1024) -> None:
@@ -1274,9 +1311,9 @@ class MediaExtractor:
                 fallback_query,
             )
 
-            # SoundCloud fallback via yt-dlp
-            sc_target = f"scsearch1:{fallback_query}"
-            sc_success = await loop.run_in_executor(None, self._download_ytdlp, sc_target, dest_template, video_id, False)
+            # SoundCloud fallback via dedicated clean search helper
+            sc_target = f"scsearch3:{fallback_query}"
+            sc_success = await loop.run_in_executor(None, self._download_soundcloud_fallback, sc_target, dest_template, video_id)
             cached_file = self._find_cached_file(video_id, cache_dir)
             if sc_success and cached_file and os.path.exists(cached_file) and os.path.getsize(cached_file) > 0:
                 sz = os.path.getsize(cached_file)
