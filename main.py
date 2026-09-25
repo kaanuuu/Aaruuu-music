@@ -95,6 +95,13 @@ async def run_bot():
     print("Starting Aaruu Music...")
     logger.info("Initializing Aaruu Music Telegram Engine...")
 
+    try:
+        import yt_dlp
+        ytdlp_ver = getattr(yt_dlp, "__version__", "unknown")
+        logger.info("[YT-DLP] version=%s", ytdlp_ver)
+    except Exception as e:
+        logger.info("[YT-DLP] version=not installed (%s)", str(e))
+
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:
         logger.error(

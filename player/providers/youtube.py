@@ -36,34 +36,94 @@ class YouTubeProvider(BaseProvider):
         if not os.path.exists(self.cookies_path):
             self.cookies_path = None
 
-    def _get_ydl_opts(self) -> Dict[str, Any]:
-        opts = {
-            "format": "bestaudio/best",
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "socket_timeout": 8,
-            "logger": YtDlpQuietLogger(),
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["ios", "android", "tv_embedded", "mweb"],
-                    "player_skip": ["webpage", "configs"],
-                }
-            },
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
+    def _get_attempt_configs(self) -> List[Dict[str, Any]]:
+        """
+        Returns sequential yt-dlp configurations to handle YouTube anti-bot / PO token mechanisms.
+        """
+        base_headers_desktop = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
         }
+        base_headers_mobile = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        configs = [
+            # Attempt 1: Default/mweb/web/android
+            {
+                "name": "mweb,web,android",
+                "opts": {
+                    "format": "bestaudio/best",
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "socket_timeout": 8,
+                    "logger": YtDlpQuietLogger(),
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": ["mweb", "web", "android"],
+                            "player_skip": ["configs"],
+                        }
+                    },
+                    "http_headers": base_headers_desktop,
+                },
+            },
+            # Attempt 2: ios,tv_embedded
+            {
+                "name": "ios,tv_embedded",
+                "opts": {
+                    "format": "bestaudio/best",
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "socket_timeout": 8,
+                    "logger": YtDlpQuietLogger(),
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": ["ios", "tv_embedded"],
+                            "player_skip": ["webpage", "configs"],
+                        }
+                    },
+                    "http_headers": base_headers_mobile,
+                },
+            },
+        ]
+
+        po_token = os.getenv("YTDLP_PO_TOKEN") or os.getenv("PO_TOKEN")
+        if po_token:
+            configs.append({
+                "name": "po_token_provider",
+                "opts": {
+                    "format": "bestaudio/best",
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "socket_timeout": 8,
+                    "logger": YtDlpQuietLogger(),
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": ["web", "mweb", "ios"],
+                            "po_token": [po_token],
+                        }
+                    },
+                    "http_headers": base_headers_desktop,
+                },
+            })
+
         if self.cookies_path and os.path.exists(self.cookies_path):
-            opts["cookiefile"] = self.cookies_path
-        return opts
+            for c in configs:
+                c["opts"]["cookiefile"] = self.cookies_path
+
+        return configs
 
     def _extract_ytdlp(
         self, target: str, is_url: bool, requester_id: int, requester_name: str
     ) -> Optional[Track]:
-        """Extracts direct audio stream URL from YouTube using yt-dlp."""
+        """Extracts direct audio stream URL from YouTube using yt-dlp with multi-attempt client strategy."""
         try:
             import yt_dlp
         except ImportError:
@@ -71,63 +131,68 @@ class YouTubeProvider(BaseProvider):
             return None
 
         search_query = target if is_url else f"ytsearch1:{target}"
-        opts = self._get_ydl_opts()
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(search_query, download=False)
-                if not info:
-                    return None
-                
-                if "entries" in info:
-                    entries = list(info.get("entries") or [])
-                    if not entries:
-                        return None
-                    entry = entries[0]
-                else:
-                    entry = info
+        configs = self._get_attempt_configs()
 
-                if not entry:
-                    return None
+        for idx, cfg in enumerate(configs, 1):
+            cfg_name = cfg["name"]
+            opts = cfg["opts"]
+            logger.info("[YOUTUBE] extraction attempt=%d", idx)
+            logger.info("[YOUTUBE] client/config=\"%s\"", cfg_name)
 
-                # Crucial Anti-Bot check detection
-                # If we get a sign-in or anti-bot prompt, raise an informative log
-                webpage_url = entry.get("webpage_url") or target
-                stream_url = entry.get("url")
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(search_query, download=False)
+                    if not info:
+                        logger.info("[YOUTUBE] result=failure")
+                        logger.info("[YOUTUBE] stream_url=missing")
+                        continue
 
-                # If stream_url is None or contains watch page URL, yt-dlp failed to find direct audio
-                if not stream_url or "youtube.com/watch" in stream_url or "youtu.be/" in stream_url:
-                    logger.warning(
-                        "[PROVIDER-YOUTUBE] Direct stream URL not found in yt-dlp metadata for '%s'",
-                        entry.get("title", "")
+                    entries = list(info.get("entries") or [info]) if "entries" in info else [info]
+                    entry = entries[0] if entries else None
+                    if not entry:
+                        logger.info("[YOUTUBE] result=failure")
+                        logger.info("[YOUTUBE] stream_url=missing")
+                        continue
+
+                    webpage_url = entry.get("webpage_url") or target
+                    stream_url = entry.get("url")
+
+                    from player.models import is_youtube_watch_url, is_direct_media_url
+
+                    # Reject missing, watch URLs, or non-direct media URLs
+                    if not stream_url or is_youtube_watch_url(stream_url) or not is_direct_media_url(stream_url):
+                        logger.info("[YOUTUBE] result=failure")
+                        logger.info("[YOUTUBE] stream_url=missing")
+                        continue
+
+                    logger.info("[YOUTUBE] result=success")
+                    logger.info("[YOUTUBE] stream_url=present")
+
+                    title = sanitize_text(entry.get("title") or target, 80)
+                    artist = (
+                        sanitize_text(entry.get("artist") or entry.get("uploader") or entry.get("channel"), 60)
+                        or "YouTube Artist"
                     )
-                    return None
+                    duration = int(entry.get("duration") or 180)
+                    thumbnail = entry.get("thumbnail") or DEFAULT_THUMBNAIL
 
-                title = sanitize_text(entry.get("title") or target, 80)
-                artist = (
-                    sanitize_text(entry.get("artist") or entry.get("uploader") or entry.get("channel"), 60)
-                    or "YouTube Artist"
-                )
-                duration = int(entry.get("duration") or 180)
-                thumbnail = entry.get("thumbnail") or DEFAULT_THUMBNAIL
+                    return Track(
+                        track_id=f"yt_{entry.get('id') or uuid.uuid4().hex[:8]}",
+                        title=title,
+                        artist=artist,
+                        duration=duration,
+                        thumbnail=thumbnail,
+                        source_url=webpage_url,
+                        stream_url=stream_url,
+                        requester_user_id=requester_id,
+                        requester_name=requester_name,
+                    )
+            except Exception as e:
+                logger.info("[YOUTUBE] result=failure")
+                logger.info("[YOUTUBE] stream_url=missing")
+                logger.debug("[YOUTUBE] Attempt %d (%s) exception: %s", idx, cfg_name, str(e))
 
-                return Track(
-                    track_id=f"yt_{entry.get('id') or uuid.uuid4().hex[:8]}",
-                    title=title,
-                    artist=artist,
-                    duration=duration,
-                    thumbnail=thumbnail,
-                    source_url=webpage_url,
-                    stream_url=stream_url,
-                    requester_user_id=requester_id,
-                    requester_name=requester_name,
-                )
-        except Exception as e:
-            err_str = str(e).lower()
-            if "confirm you" in err_str or "sign in" in err_str or "bot" in err_str or "429" in err_str:
-                logger.warning("[PROVIDER-YOUTUBE] YOUTUBE_EXTRACTION_BLOCKED by YouTube anti-bot checks: %s", str(e))
-            else:
-                logger.warning("[PROVIDER-YOUTUBE] yt-dlp extraction failed: %s", str(e))
-            return None
+        return None
 
     def _get_video_ydl_opts(self) -> Dict[str, Any]:
         opts = {
