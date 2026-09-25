@@ -154,6 +154,7 @@ class MediaExtractor:
 
     def __init__(self):
         self._cache: Dict[str, Tuple[float, Any]] = {}
+        self.last_extraction_status: str = "NONE"
         self.cookies_path = os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES")
         # Support inline Netscape cookies passed via environment variable (YTDLP_COOKIES_TEXT or COOKIES)
         cookies_text = os.getenv("YTDLP_COOKIES_TEXT") or os.getenv("COOKIES_TEXT")
@@ -378,8 +379,11 @@ class MediaExtractor:
         )
 
         if not all_candidates:
+            self.last_extraction_status = "NO_SEARCH_RESULTS"
             logger.warning("[SEARCH_FAILED] No search results returned from any provider for: '%s'", clean_input)
             return None
+
+        self.last_extraction_status = "MATCH_FOUND_BUT_EXTRACTION_FAILED"
 
         # 5. Score and filter candidates against query
         scored_candidates: List[Tuple[float, Track]] = []
@@ -935,21 +939,53 @@ class MediaExtractor:
         return None
 
     def _download_direct_url(self, url: str, dest_path: str) -> bool:
+        """Downloads direct audio stream from JioSaavn, SoundCloud, GoogleVideo / YouTube CDN, or direct CDN."""
+        from player.models import is_direct_media_url
+        if not url or not is_direct_media_url(url):
+            return False
+
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://www.jiosaavn.com/",
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+                "Accept": "*/*",
+                "Accept-Encoding": "identity",
             }
+            if "saavncdn" in url or "jiosaavn" in url:
+                headers["Referer"] = "https://www.jiosaavn.com/"
+            elif "sndcdn" in url or "soundcloud" in url:
+                headers["Referer"] = "https://soundcloud.com/"
+            elif "googlevideo" in url or "youtube" in url:
+                headers["Referer"] = "https://www.youtube.com/"
+
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as response, open(dest_path, "wb") as out_file:
-                while True:
-                    chunk = response.read(64 * 1024)
-                    if not chunk:
-                        break
-                    out_file.write(chunk)
-            return True
+            with urllib.request.urlopen(req, timeout=30) as response:
+                status_code = getattr(response, "status", 200)
+                if status_code not in (200, 206):
+                    logger.warning("Direct download HTTP status error %s for %s", status_code, url[:80])
+                    return False
+
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "text/html" in content_type or "application/json" in content_type:
+                    logger.warning("Direct download received invalid content-type '%s' for %s", content_type, url[:80])
+                    return False
+
+                with open(dest_path, "wb") as out_file:
+                    while True:
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+
+            if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+                return True
+            return False
         except Exception as e:
-            logger.warning("Direct download failed for %s: %s", url, str(e))
+            logger.warning("Direct download failed for %s: %s", url[:80], str(e))
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except Exception:
+                    pass
             return False
 
     def _download_ytdlp(self, url_or_query: str, dest_path: str) -> bool:
@@ -978,7 +1014,7 @@ class MediaExtractor:
 
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url_or_query])
-            return True
+            return os.path.exists(dest_path) and os.path.getsize(dest_path) > 0
         except Exception as e:
             logger.warning("yt-dlp download failed for %s: %s", url_or_query, str(e))
             return False
@@ -1018,13 +1054,22 @@ class MediaExtractor:
     async def download_track(self, track: Track) -> bool:
         """
         Downloads a track's audio or video stream to a local cache file for resilient zero-jitter playback.
-        Returns True if successfully downloaded or already cached.
+        Strict Priority:
+        1. existing local_filepath
+        2. existing cached local file in /tmp/aaruu_cache
+        3. direct track.stream_url
+        4. only then source_url as an extraction/reference URL
         """
         if not track:
             return False
 
-        # If already cached and valid, reuse it immediately
+        # Priority 1: If already cached in local_filepath and valid, reuse it immediately
         if track.local_filepath and os.path.exists(track.local_filepath) and os.path.getsize(track.local_filepath) > 0:
+            logger.info("[MEDIA] track=%s", track.title)
+            logger.info("[MEDIA] source_url=%s", getattr(track, "source_url", None))
+            logger.info("[MEDIA] stream_url=%s", getattr(track, "stream_url", None))
+            logger.info("[MEDIA] selected_source_type=LOCAL_FILE")
+            logger.info("[MEDIA] downloading_source=%s", track.local_filepath)
             return True
 
         cache_dir = "/tmp/aaruu_cache"
@@ -1035,30 +1080,73 @@ class MediaExtractor:
         ext = "mp4" if is_video else "mp3"
         local_path = os.path.join(cache_dir, f"{track.track_id}.{ext}")
 
-        # Check if file already exists in cache (e.g. from a previous playback)
+        # Priority 2: Check if file already exists in cache (e.g. from a previous playback)
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             track.local_filepath = local_path
+            logger.info("[MEDIA] track=%s", track.title)
+            logger.info("[MEDIA] source_url=%s", getattr(track, "source_url", None))
+            logger.info("[MEDIA] stream_url=%s", getattr(track, "stream_url", None))
+            logger.info("[MEDIA] selected_source_type=LOCAL_FILE")
+            logger.info("[MEDIA] downloading_source=%s", local_path)
             return True
 
-        # Determine download source
-        source = track.stream_url or track.source_url
-        if not source:
-            return False
+        from player.models import is_youtube_watch_url, is_direct_media_url, classify_media_source
 
-        logger.info("Extractor: Downloading track '%s' (ID: %s, Video: %s)...", track.title, track.track_id, is_video)
+        stream_url = getattr(track, "stream_url", None)
+        source_url = getattr(track, "source_url", None)
+
         loop = asyncio.get_running_loop()
 
-        success = False
-        if is_video:
-            success = await loop.run_in_executor(None, self._download_video_ytdlp, track.source_url or source, local_path)
-        else:
-            # If it's a direct mp3/m4a from JioSaavn/SoundCloud, use lightweight direct HTTP chunked downloader
-            if "saavncdn" in source or "sndcdn" in source or source.endswith((".mp3", ".m4a", ".aac")):
-                success = await loop.run_in_executor(None, self._download_direct_url, source, local_path)
+        # If stream_url is missing but source_url is a YouTube watch URL, attempt direct stream extraction first
+        if not stream_url and source_url and is_youtube_watch_url(source_url):
+            try:
+                from player.providers.youtube import youtube_provider
+                ytdl_tr = await loop.run_in_executor(
+                    None, youtube_provider._extract_ytdlp, source_url, True, track.requester_user_id, track.requester_name
+                )
+                if ytdl_tr and ytdl_tr.stream_url and is_direct_media_url(ytdl_tr.stream_url):
+                    track.stream_url = ytdl_tr.stream_url
+                    stream_url = track.stream_url
+            except Exception as e:
+                logger.debug("Pre-download stream extraction note: %s", str(e))
 
-            # Fallback to yt-dlp if direct download fails or if it's a YouTube source
-            if not success:
-                success = await loop.run_in_executor(None, self._download_ytdlp, track.source_url or source, local_path)
+        success = False
+
+        # Priority 3: Direct track.stream_url
+        if stream_url and is_direct_media_url(stream_url):
+            logger.info("[MEDIA] track=%s", track.title)
+            logger.info("[MEDIA] source_url=%s", source_url)
+            logger.info("[MEDIA] stream_url=%s", stream_url)
+            logger.info("[MEDIA] selected_source_type=DIRECT_MEDIA")
+            logger.info("[MEDIA] downloading_source=%s", stream_url)
+
+            if is_video:
+                success = await loop.run_in_executor(None, self._download_video_ytdlp, stream_url, local_path)
+            else:
+                success = await loop.run_in_executor(None, self._download_direct_url, stream_url, local_path)
+                if not success and source_url and is_youtube_watch_url(source_url):
+                    # Fallback to downloading source_url with yt-dlp if direct download fails
+                    success = await loop.run_in_executor(None, self._download_ytdlp, source_url, local_path)
+        else:
+            # Priority 4: source_url fallback
+            download_source = source_url or stream_url
+            if not download_source:
+                return False
+
+            stype = "YOUTUBE_WATCH" if is_youtube_watch_url(download_source) else ("DIRECT_MEDIA" if is_direct_media_url(download_source) else "UNKNOWN")
+            logger.info("[MEDIA] track=%s", track.title)
+            logger.info("[MEDIA] source_url=%s", source_url)
+            logger.info("[MEDIA] stream_url=%s", stream_url)
+            logger.info("[MEDIA] selected_source_type=%s", stype)
+            logger.info("[MEDIA] downloading_source=%s", download_source)
+
+            if is_video:
+                success = await loop.run_in_executor(None, self._download_video_ytdlp, download_source, local_path)
+            else:
+                if is_direct_media_url(download_source):
+                    success = await loop.run_in_executor(None, self._download_direct_url, download_source, local_path)
+                elif is_youtube_watch_url(download_source):
+                    success = await loop.run_in_executor(None, self._download_ytdlp, download_source, local_path)
 
         if success:
             if os.path.exists(local_path) and os.path.getsize(local_path) > 0:

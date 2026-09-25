@@ -130,6 +130,63 @@ class TestSearchAndMatching(unittest.TestCase):
         self.assertFalse(valid_s)
         self.assertIn("Too short", reason_s)
 
+    def test_is_youtube_watch_url_and_is_direct_media_url(self):
+        """Verify URL classification helpers."""
+        from player.models import is_youtube_watch_url, is_direct_media_url
+
+        self.assertTrue(is_youtube_watch_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        self.assertTrue(is_youtube_watch_url("https://youtu.be/dQw4w9WgXcQ"))
+        self.assertTrue(is_youtube_watch_url("https://www.youtube.com/shorts/abc12345"))
+        self.assertFalse(is_youtube_watch_url("https://rr1---sn-abc.googlevideo.com/videoplayback?id=123"))
+        self.assertFalse(is_youtube_watch_url("https://aac.saavncdn.com/123/sample.mp3"))
+        self.assertFalse(is_youtube_watch_url(None))
+
+        self.assertTrue(is_direct_media_url("https://rr1---sn-abc.googlevideo.com/videoplayback?id=123"))
+        self.assertTrue(is_direct_media_url("https://aac.saavncdn.com/123/sample.mp3"))
+        self.assertTrue(is_direct_media_url("https://cf-media.sndcdn.com/stream.128.mp3"))
+        self.assertFalse(is_direct_media_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        self.assertFalse(is_direct_media_url("https://youtu.be/dQw4w9WgXcQ"))
+        self.assertFalse(is_direct_media_url(None))
+
+    def test_stream_url_priority_in_download_track(self):
+        """Verify that download_track downloads direct stream_url and does not fall back to watch URL."""
+        async def run():
+            direct_stream = "https://rr1---sn-abc.googlevideo.com/videoplayback?expire=12345&itag=140"
+            tr = Track(
+                track_id="direct_yt_test",
+                title="Direct Stream Song",
+                artist="Artist",
+                duration=200,
+                thumbnail="https://example.com/thumb.jpg",
+                source_url="https://www.youtube.com/watch?v=direct_yt_test",
+                stream_url=direct_stream,
+                requester_user_id=1,
+                requester_name="User",
+            )
+
+            # Mock _download_direct_url to create the file and return True
+            def fake_direct_dl(url, dest_path):
+                self.assertEqual(url, direct_stream)
+                with open(dest_path, "wb") as f:
+                    f.write(b"ID3" + b"\x00" * 100)
+                return True
+
+            with patch.object(self.extractor, "_download_direct_url", side_effect=fake_direct_dl) as mock_direct, \
+                 patch.object(self.extractor, "_download_ytdlp") as mock_ytdlp:
+
+                ok = await self.extractor.download_track(tr)
+                self.assertTrue(ok)
+                self.assertTrue(mock_direct.called)
+                self.assertFalse(mock_ytdlp.called)
+                self.assertIsNotNone(tr.local_filepath)
+                self.assertTrue(os.path.exists(tr.local_filepath))
+
+                # Clean up
+                if os.path.exists(tr.local_filepath):
+                    os.remove(tr.local_filepath)
+
+        asyncio.run(run())
+
     def test_extract_pipeline_mocked_end_to_end(self):
         """Test complete extraction pipeline: query -> candidates -> download -> FFmpeg -> return track."""
         async def run():

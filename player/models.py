@@ -266,29 +266,61 @@ class PlayerState:
         self.new_session()
 
 
+def is_youtube_watch_url(url: Optional[str]) -> bool:
+    """Returns True if the URL points to a YouTube watch, share, short, or live webpage."""
+    if not url or not isinstance(url, str):
+        return False
+    clean = url.lower().strip()
+    return any(yt in clean for yt in ("youtube.com/watch", "youtu.be/", "youtube.com/shorts", "youtube.com/live", "youtube.com/embed"))
+
+
+def is_search_url(url: Optional[str]) -> bool:
+    """Returns True if the URL points to a search results webpage or search query string."""
+    if not url or not isinstance(url, str):
+        return False
+    clean = url.lower().strip()
+    return any(s in clean for s in ("youtube.com/results", "soundcloud.com/search", "ytsearch", "scsearch"))
+
+
+def is_direct_media_url(url: Optional[str]) -> bool:
+    """Returns True if the URL points to a direct HTTP media stream (not a webpage, YouTube watch URL, or search URL)."""
+    if not url or not isinstance(url, str) or not url.strip():
+        return False
+    clean = url.lower().strip()
+    if is_youtube_watch_url(clean) or is_search_url(clean):
+        return False
+    return clean.startswith(("http://", "https://"))
+
+
 def classify_media_source(source_path_or_url: Optional[str]) -> str:
     """
     Classifies a candidate media source to avoid passing YouTube watch URLs or invalid streams to FFmpeg:
-    Returns one of: 'LOCAL_FILE', 'DIRECT_HTTP_MEDIA', 'YOUTUBE_WATCH_URL', 'UNKNOWN'
+    Returns one of: 'LOCAL_FILE', 'DIRECT_HTTP_MEDIA' / 'DIRECT_MEDIA', 'YOUTUBE_WATCH_URL' / 'YOUTUBE_WATCH', 'SEARCH_URL', 'UNKNOWN'
     """
     if not source_path_or_url or not isinstance(source_path_or_url, str) or not source_path_or_url.strip():
         return "UNKNOWN"
     
-    # 1. YouTube watch and shorts URLs
-    if any(yt in source_path_or_url for yt in ("youtube.com/watch", "youtu.be/", "youtube.com/shorts")):
-        return "YOUTUBE_WATCH_URL"
+    clean = source_path_or_url.strip()
 
-    # 2. Local file
+    # 1. Local file
     import os
-    if os.path.exists(source_path_or_url):
+    if os.path.exists(clean):
         try:
-            if os.path.getsize(source_path_or_url) > 0:
+            if os.path.getsize(clean) > 0:
                 return "LOCAL_FILE"
         except Exception:
             pass
 
-    # 3. Direct HTTP media URLs
-    if source_path_or_url.startswith(("http://", "https://")):
+    # 2. YouTube watch and shorts URLs
+    if is_youtube_watch_url(clean):
+        return "YOUTUBE_WATCH_URL"
+
+    # 3. Search URLs
+    if is_search_url(clean):
+        return "SEARCH_URL"
+
+    # 4. Direct HTTP media URLs
+    if is_direct_media_url(clean):
         return "DIRECT_HTTP_MEDIA"
 
     return "UNKNOWN"

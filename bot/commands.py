@@ -307,7 +307,13 @@ async def _execute_playback_flow(message: Dict[str, Any], query_text: str, is_vi
         track = await extractor.extract(query_text, user_id, first_name)
 
     if not track or not track.playable_source:
-        if is_video:
+        st = getattr(extractor, "last_extraction_status", "UNKNOWN")
+        if st == "MATCH_FOUND_BUT_EXTRACTION_FAILED":
+            fail_text = (
+                f"⚠️ {to_small_caps('found matching song, but audio stream extraction failed for')}: \"{sanitize_text(query_text, 35)}\"\n"
+                f"💡 {to_small_caps('please try another title or keyword')}"
+            )
+        elif is_video:
             fail_text = (
                 f"❌ {to_small_caps('could not extract playable video for')}: \"{sanitize_text(query_text, 35)}\"\n"
                 f"💡 {to_small_caps('please try another title or keyword')}"
