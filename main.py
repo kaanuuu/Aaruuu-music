@@ -45,6 +45,7 @@ from bot.handlers import process_update
 from database.db import Database
 from player.manager import player_manager
 from player.voice_chat import voice_assistant
+from utils.cookie_manager import log_cookie_status_at_startup
 from utils.logging import logger
 
 db = Database()
@@ -101,6 +102,8 @@ async def run_bot():
         logger.info("[YT-DLP] version=%s", ytdlp_ver)
     except Exception as e:
         logger.info("[YT-DLP] version=not installed (%s)", str(e))
+
+    log_cookie_status_at_startup()
 
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:

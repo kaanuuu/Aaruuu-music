@@ -12,12 +12,14 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 from player.models import Track
 from player.providers.base import BaseProvider
+from utils.cookie_manager import get_youtube_cookie_file, log_cookie_status_at_startup
 from utils.escaping import sanitize_text
 from utils.logging import logger
 
 DEFAULT_THUMBNAIL = (
     "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
 )
+
 
 class YtDlpQuietLogger:
     def debug(self, msg):
@@ -50,8 +52,8 @@ class YouTubeProvider(BaseProvider):
     """Encapsulates all YouTube metadata extraction and direct audio stream parsing."""
 
     def __init__(self):
-        cfile = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES") or "/tmp/cookies.txt"
-        self.cookies_path = cfile if (cfile and os.path.exists(cfile) and os.path.isfile(cfile)) else None
+        log_cookie_status_at_startup()
+        self.cookies_path = get_youtube_cookie_file()
 
     def get_po_token_status(self) -> str:
         po_tok = os.getenv("YTDLP_PO_TOKEN") or os.getenv("PO_TOKEN")

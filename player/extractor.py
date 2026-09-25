@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from player.models import Track
 from player.voice_chat import verify_media_file_with_ffmpeg
+from utils.cookie_manager import get_youtube_cookie_file
 from utils.escaping import sanitize_text
 from utils.logging import logger
 
@@ -156,22 +157,7 @@ class MediaExtractor:
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._download_locks: Dict[str, asyncio.Lock] = {}
         self.last_extraction_status: str = "NONE"
-        self.cookies_path = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES")
-        # Support inline Netscape cookies passed via environment variable (YTDLP_COOKIES_TEXT or COOKIES)
-        cookies_text = os.getenv("YTDLP_COOKIES_TEXT") or os.getenv("COOKIES_TEXT")
-        if not cookies_text and self.cookies_path and "\n" in self.cookies_path:
-            cookies_text = self.cookies_path
-            self.cookies_path = None
-
-        if cookies_text:
-            try:
-                tmp_cookie = "/tmp/cookies.txt"
-                with open(tmp_cookie, "w") as f:
-                    f.write(cookies_text.strip())
-                self.cookies_path = tmp_cookie
-                logger.info("Extractor: Loaded inline YouTube cookies into /tmp/cookies.txt")
-            except Exception as e:
-                logger.warning("Extractor: Could not write inline cookies: %s", str(e))
+        self.cookies_path = get_youtube_cookie_file()
 
     def _get_from_cache(self, key: str) -> Optional[Any]:
         if key in self._cache:
