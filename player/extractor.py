@@ -132,7 +132,7 @@ def validate_and_score_track(query: str, track: Track, is_explicit_clip: bool = 
 
 
 class YtDlpQuietLogger:
-    """Redirects yt-dlp warnings/errors to debug logs to keep stdout/stderr clean."""
+    """Redirects yt-dlp warnings/errors to debug logs to keep stdout/stderr clean and safe."""
 
     def debug(self, msg: str) -> None:
         pass
@@ -144,7 +144,9 @@ class YtDlpQuietLogger:
         logger.debug("yt-dlp warning: %s", msg)
 
     def error(self, msg: str) -> None:
-        logger.debug("yt-dlp error suppressed: %s", msg)
+        if msg:
+            sanitized = re.sub(r'(cookie|token|auth|key|password)=[\w\.-]+', r'\1=***', str(msg).strip(), flags=re.IGNORECASE)
+            logger.debug("[YTDLP_ERROR_LOG] %s", sanitized[:250])
 
 
 class MediaExtractor:

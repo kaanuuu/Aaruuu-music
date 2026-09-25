@@ -12,7 +12,10 @@ from player.voice_chat import voice_assistant
 from utils.logging import logger
 
 
+from player.extractor import MediaExtractor
+
 RECOMMENDATION_CACHE: Dict[int, Track] = {}
+shared_extractor = MediaExtractor()
 
 
 class PlayerManager:
@@ -28,9 +31,7 @@ class PlayerManager:
 
     async def _download_track(self, track: Track) -> bool:
         try:
-            from player.extractor import MediaExtractor
-            extractor = MediaExtractor()
-            return await extractor.download_track(track)
+            return await shared_extractor.download_track(track)
         except Exception as e:
             logger.warning("Could not download track inline in player manager: %s", str(e))
             return False
@@ -494,10 +495,8 @@ class PlayerManager:
 
             # Queue empty -> Check Autoplay
             if state.autoplay and old_track:
-                from player.extractor import MediaExtractor
-                extractor = MediaExtractor()
                 loop = asyncio.get_running_loop()
-                auto_track = await loop.run_in_executor(None, extractor.extract_related_track, old_track)
+                auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track)
                 if auto_track:
                     RECOMMENDATION_CACHE[chat_id] = auto_track
                     logger.info("[AUTOPLAY] Generated recommendation '%s' for chat %s", auto_track.title, chat_id)
