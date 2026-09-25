@@ -969,6 +969,8 @@ class MediaExtractor:
                 "fragment_retries": 2,
                 "socket_timeout": 20,
                 "continuedl": True,
+                "js_runtimes": {"node": {}},
+                "extractor_args": {"youtube": {"player_client": ["mweb", "web_embedded", "android", "ios", "web"]}},
                 "logger": YtDlpQuietLogger(),
             }
             cookie_file = self.cookies_path if use_cookies else None
@@ -1014,6 +1016,8 @@ class MediaExtractor:
                 "fragment_retries": 2,
                 "socket_timeout": 20,
                 "continuedl": True,
+                "js_runtimes": {"node": {}},
+                "extractor_args": {"youtube": {"player_client": ["mweb", "web_embedded", "android", "ios", "web"]}},
                 "logger": YtDlpQuietLogger(),
             }
             cookie_file = self.cookies_path if use_cookies else None
@@ -1205,7 +1209,7 @@ class MediaExtractor:
                 return direct_dest
 
         # Build clean YouTube watch URL for yt-dlp
-        yt_watch_url = f"https://www.youtube.com/watch?v={video_id}" if not track.source_url or "youtube.com" not in track.source_url else track.source_url
+        yt_watch_url = f"https://www.youtube.com/watch?v={video_id}"
         dest_template = os.path.join(cache_dir, f"{video_id}.%(ext)s")
 
         logger.info(

@@ -143,21 +143,27 @@ class JioSaavnProvider:
         if not query or not query.strip():
             return []
         
-        # We try both the standard /api/search/songs and fallback to legacy endpoints
-        endpoint = f"/api/search/songs?query={urllib.parse.quote(query.strip())}&limit={limit}"
-        data = self._request_api(endpoint)
+        endpoints = [
+            f"/api/search/songs?query={urllib.parse.quote(query.strip())}&limit={limit}",
+            f"/search/songs?query={urllib.parse.quote(query.strip())}",
+            f"/api/search?query={urllib.parse.quote(query.strip())}",
+        ]
         
         results = []
-        if data and isinstance(data, dict):
-            # Parse response format which can be wrapped in 'data'
-            results = data.get("data", {}).get("results", []) or data.get("results", []) or data.get("data", [])
-        
-        if not results:
-            # Fallback to general search if song search yielded empty
-            endpoint_fallback = f"/api/search?query={urllib.parse.quote(query.strip())}"
-            data_fb = self._request_api(endpoint_fallback)
-            if data_fb and isinstance(data_fb, dict):
-                results = data_fb.get("data", {}).get("songs", {}).get("results", []) or data_fb.get("songs", {}).get("results", [])
+        for endpoint in endpoints:
+            data = self._request_api(endpoint)
+            if data:
+                if isinstance(data, list):
+                    results = data
+                elif isinstance(data, dict):
+                    results = (
+                        data.get("data", {}).get("results", [])
+                        or data.get("results", [])
+                        or data.get("data", [])
+                        or data.get("songs", {}).get("results", [])
+                    )
+                if results:
+                    break
         
         tracks = []
         if isinstance(results, list):
