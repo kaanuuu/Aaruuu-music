@@ -201,14 +201,14 @@ async def handle_search_select(
 
     track = tracks[idx]
     await bot_api_client.answer_callback_query(cq_id, f"Preparing '{track.title}'...")
-    
-    # Ensure selected metadata track is resolved to playable media before playback
-    if not track.playable_source:
-        resolved_ok = await extractor.download_track(track)
-        if not resolved_ok:
-            fallback_tr = await extractor.extract(track.title, user_id, username)
-            if fallback_tr and fallback_tr.playable_source:
-                track = fallback_tr
+
+    # Download and prepare local audio file using centralized prepare_track pipeline
+    local_path = await extractor.prepare_track(track, is_video=False)
+    if not local_path or not os.path.exists(local_path):
+        await bot_api_client.answer_callback_query(
+            cq_id, f"⚠️ Couldn't download '{track.title}'. Please try another song.", show_alert=True
+        )
+        return
 
     search_rich = build_search_rich_ui("Music", tracks, selected_idx=idx)
     await bot_api_client.edit_message_rich_text(chat_id, message_id, search_rich)
@@ -313,40 +313,27 @@ async def _execute_playback_flow(message: Dict[str, Any], query_text: str, is_vi
     )
     status_id = status_msg.get("result", {}).get("message_id")
 
-    # 2. Accurate search & extraction (validates full track, rejects shorts/clips, multi-source fallback)
+    # 2. Search metadata & candidate
     if is_video:
         track = await extractor.extract_video(query_text, user_id, first_name)
     else:
         track = await extractor.extract(query_text, user_id, first_name)
 
-    if not track or not track.playable_source:
-        st = getattr(extractor, "last_extraction_status", "UNKNOWN")
-        if st == "MATCH_FOUND_BUT_EXTRACTION_FAILED":
-            fail_text = (
-                f"⚠️ {to_small_caps('found matching song, but audio stream extraction failed for')}: \"{sanitize_text(query_text, 35)}\"\n"
-                f"💡 {to_small_caps('please try another title or keyword')}"
-            )
-        elif is_video:
-            fail_text = (
-                f"❌ {to_small_caps('could not extract playable video for')}: \"{sanitize_text(query_text, 35)}\"\n"
-                f"💡 {to_small_caps('please try another title or keyword')}"
-            )
-        else:
-            fail_text = (
-                f"❌ {to_small_caps('could not find matching audio for')}: \"{sanitize_text(query_text, 35)}\"\n"
-                f"💡 {to_small_caps('try searching with')}: /search {sanitize_text(query_text, 25)}"
-            )
-
+    if not track:
+        fail_text = (
+            f"❌ {to_small_caps('could not find matching song for')}: \"{sanitize_text(query_text, 35)}\"\n"
+            f"💡 {to_small_caps('try searching with')}: /search {sanitize_text(query_text, 25)}"
+        )
         if status_id:
             await bot_api_client.edit_message_text(chat_id, status_id, fail_text)
         else:
             await bot_api_client.send_message(chat_id, fail_text, reply_to_message_id=reply_to_id)
         return
 
-    # 3. Edit SAME request message: Found -> Downloading/Preparing...
+    # 3. Edit SAME request message: Found -> Downloading local audio file...
     dur_str = format_time(track.duration) if track.duration else "Live"
     icon = "🎬" if is_video else "🎵"
-    action_verb = "extracting & preparing video stream" if is_video else "downloading & buffering audio"
+    action_verb = "downloading & caching video" if is_video else "downloading & caching audio"
     found_text = (
         f"{icon} {track.title} ({dur_str})\n"
         f"👤 {track.artist}\n"
@@ -355,6 +342,19 @@ async def _execute_playback_flow(message: Dict[str, Any], query_text: str, is_vi
     )
     if status_id:
         await bot_api_client.edit_message_text(chat_id, status_id, found_text)
+
+    # 4. Centralized download & cache pipeline
+    local_path = await extractor.prepare_track(track, is_video=is_video)
+    if not local_path or not os.path.exists(local_path):
+        fail_text = (
+            f"⚠️ {to_small_caps('could not download this track for playback')}: \"{sanitize_text(track.title, 35)}\"\n"
+            f"💡 {to_small_caps('please try another song or keyword')}"
+        )
+        if status_id:
+            await bot_api_client.edit_message_text(chat_id, status_id, fail_text)
+        else:
+            await bot_api_client.send_message(chat_id, fail_text, reply_to_message_id=reply_to_id)
+        return
 
     await _finish_playback_flow(
         message, track, status_id, user_id, first_name, username, requester_label, requester_mention, is_video

@@ -95,6 +95,31 @@ def get_youtube_cookie_file() -> Optional[str]:
     return None
 
 
+def get_cookie_diagnostic_status() -> str:
+    """
+    Evaluates cookie configuration and returns diagnostic status code:
+    - COOKIES_ENV_MISSING
+    - COOKIES_EMPTY
+    - COOKIES_INVALID
+    - COOKIES_READY
+    """
+    raw_env = os.getenv("YTDLP_COOKIES_TEXT")
+    if raw_env is None:
+        raw_env_alt = os.getenv("COOKIES_TEXT") or os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES")
+        if raw_env_alt is None:
+            return "COOKIES_ENV_MISSING"
+        raw_env = raw_env_alt
+
+    if not raw_env or not raw_env.strip():
+        return "COOKIES_EMPTY"
+
+    cfile = get_youtube_cookie_file()
+    if cfile and os.path.exists(cfile) and os.path.getsize(cfile) > 0:
+        return "COOKIES_READY"
+
+    return "COOKIES_INVALID"
+
+
 def log_cookie_status_at_startup() -> None:
     """Logs safe diagnostic status at startup without leaking secrets."""
     global _LOGGED_STARTUP_STATUS
@@ -102,27 +127,16 @@ def log_cookie_status_at_startup() -> None:
         return
     _LOGGED_STARTUP_STATUS = True
 
+    status_code = get_cookie_diagnostic_status()
     cfile = get_youtube_cookie_file()
-    if cfile and os.path.exists(cfile):
-        try:
-            readable = os.access(cfile, os.R_OK)
-            entries = 0
-            with open(cfile, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line_str = line.strip()
-                    if line_str and not line_str.startswith("#"):
-                        parts = re.split(r"\s+", line_str)
-                        if len(parts) >= 6:
-                            entries += 1
-            logger.info(
-                "[YTDLP] cookies_configured=true cookiefile_configured=true cookie_file_exists=true cookie_file_readable=%s cookie_entries=%d",
-                str(readable).lower(),
-                entries,
-            )
-        except Exception as e:
-            logger.info("[YTDLP] cookies_configured=true cookiefile_configured=true (reading stats error: %s)", str(e))
-    else:
-        logger.info("[YTDLP] cookies_configured=false cookiefile_configured=false")
+    has_cookies = status_code == "COOKIES_READY"
+
+    logger.info(
+        "[YTDLP] cookies_status=%s cookies_configured=%s cookiefile_configured=%s",
+        status_code,
+        str(has_cookies).lower(),
+        str(has_cookies).lower(),
+    )
 
 
 def cleanup_cookie_files() -> None:

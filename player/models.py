@@ -46,7 +46,7 @@ class Track:
 
     @property
     def playable_source(self) -> Optional[str]:
-        """Returns local file path if downloaded and exists, else direct media stream_url if valid. Never returns watch-page URLs."""
+        """Returns local file path if downloaded and exists (>0 bytes). Never returns YouTube watch URLs or direct unbuffered stream URLs."""
         import os
         if hasattr(self, "local_filepath") and self.local_filepath and isinstance(self.local_filepath, str) and os.path.exists(self.local_filepath):
             try:
@@ -54,16 +54,15 @@ class Track:
                     return self.local_filepath
             except Exception:
                 pass
-        
-        # Ensure stream_url is a direct media stream URL and NOT a watch webpage URL
+
+        # Allow direct non-YouTube CDN media URLs (e.g. JioSaavn / direct MP3 files)
         if self.stream_url and isinstance(self.stream_url, str):
-            if "youtube.com/watch" not in self.stream_url and "youtu.be/" not in self.stream_url and "youtube.com/shorts" not in self.stream_url:
+            if "youtube.com" not in self.stream_url and "youtu.be" not in self.stream_url and "googlevideo.com" not in self.stream_url:
                 if self.stream_url.startswith(("http://", "https://")):
                     return self.stream_url
 
-        # Direct non-YouTube audio CDN source URL
         if self.source_url and isinstance(self.source_url, str):
-            if "youtube.com/watch" not in self.source_url and "youtu.be/" not in self.source_url and "youtube.com/shorts" not in self.source_url:
+            if "youtube.com" not in self.source_url and "youtu.be" not in self.source_url and "googlevideo.com" not in self.source_url:
                 if self.source_url.startswith(("http://", "https://")) and any(ext in self.source_url for ext in (".mp3", ".m4a", ".aac", ".ogg", "saavncdn", "sndcdn")):
                     return self.source_url
 
