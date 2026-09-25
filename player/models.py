@@ -93,37 +93,49 @@ class Track:
         }
 
 
+class MediaSourceType:
+    LOCAL = "LOCAL_FILE"
+    DIRECT_AUDIO = "DIRECT_HTTP_MEDIA"
+    DIRECT_VIDEO = "DIRECT_VIDEO"
+    YOUTUBE_PAGE = "YOUTUBE_WATCH_URL"
+    OTHER_WEBPAGE = "OTHER_WEBPAGE"
+    UNKNOWN = "UNKNOWN"
+
+
 def classify_media_source(source: Optional[str]) -> str:
     """
-    Classifies media source:
+    Classifies media source into MediaSourceType constants:
     - LOCAL_FILE: local path on disk that exists and is non-empty
-    - DIRECT_HTTP_MEDIA: direct audio/video HTTP(S) stream (e.g. CDN .mp3/.m4a, soundcloud stream, saavncdn)
+    - DIRECT_HTTP_MEDIA: direct audio/video HTTP(S) stream
     - YOUTUBE_WATCH_URL: raw YouTube watch/shorts webpage URL (must NOT be passed to FFmpeg)
     - UNKNOWN: missing, invalid, or unrecognized
     """
     import os
     if not source or not isinstance(source, str):
-        return "UNKNOWN"
+        return MediaSourceType.UNKNOWN
 
     clean = source.strip()
     if not clean:
-        return "UNKNOWN"
+        return MediaSourceType.UNKNOWN
 
     if os.path.exists(clean) and os.path.isfile(clean):
         try:
             if os.path.getsize(clean) > 0:
-                return "LOCAL_FILE"
+                return MediaSourceType.LOCAL
         except Exception:
             pass
-        return "UNKNOWN"
+        return MediaSourceType.UNKNOWN
 
-    if "youtube.com/watch" in clean or "youtu.be/" in clean or "youtube.com/shorts" in clean or "youtube.com/embed" in clean:
-        return "YOUTUBE_WATCH_URL"
+    if is_youtube_watch_url(clean):
+        return MediaSourceType.YOUTUBE_PAGE
 
-    if clean.startswith(("http://", "https://")):
-        return "DIRECT_HTTP_MEDIA"
+    if is_search_url(clean):
+        return MediaSourceType.OTHER_WEBPAGE
 
-    return "UNKNOWN"
+    if is_direct_media_url(clean):
+        return MediaSourceType.DIRECT_AUDIO
+
+    return MediaSourceType.UNKNOWN
 
 
 class PlayerState:

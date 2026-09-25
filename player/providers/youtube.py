@@ -28,13 +28,36 @@ class YtDlpQuietLogger:
         pass
 
 
+def classify_youtube_exception(e: Exception) -> str:
+    """Classifies yt-dlp exception into safe error category without leaking sensitive details."""
+    msg = str(e).lower()
+    if "403" in msg or "forbidden" in msg:
+        return "HTTP_403"
+    if "429" in msg or "too many requests" in msg:
+        return "HTTP_429"
+    if "sign in" in msg or "login" in msg or "confirm you're not a bot" in msg or "bot" in msg:
+        return "BOT_CHECK"
+    if "po_token" in msg or "proof of origin" in msg or "pot" in msg:
+        return "PO_TOKEN_REQUIRED"
+    if "private" in msg or "members-only" in msg or "account" in msg:
+        return "AUTH_REQUIRED"
+    if "network" in msg or "connection" in msg or "timeout" in msg or "timed out" in msg:
+        return "NETWORK_ERROR"
+    return "EXTRACTION_ERROR"
+
+
 class YouTubeProvider(BaseProvider):
     """Encapsulates all YouTube metadata extraction and direct audio stream parsing."""
 
     def __init__(self):
-        self.cookies_path = os.getenv("YTDLP_COOKIES") or "/tmp/cookies.txt"
-        if not os.path.exists(self.cookies_path):
-            self.cookies_path = None
+        cfile = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES") or "/tmp/cookies.txt"
+        self.cookies_path = cfile if (cfile and os.path.exists(cfile) and os.path.isfile(cfile)) else None
+
+    def get_po_token_status(self) -> str:
+        po_tok = os.getenv("YTDLP_PO_TOKEN") or os.getenv("PO_TOKEN")
+        if po_tok:
+            return "configured"
+        return "unavailable"
 
     def _get_attempt_configs(self) -> List[Dict[str, Any]]:
         """
@@ -188,8 +211,10 @@ class YouTubeProvider(BaseProvider):
                         requester_name=requester_name,
                     )
             except Exception as e:
-                logger.info("[YOUTUBE] result=failure")
+                err_type = classify_youtube_exception(e)
+                logger.info("[YOUTUBE] result=failure error_type=%s", err_type)
                 logger.info("[YOUTUBE] stream_url=missing")
+                logger.info("[MEDIA] youtube_error_type=%s", err_type)
                 logger.debug("[YOUTUBE] Attempt %d (%s) exception: %s", idx, cfg_name, str(e))
 
         return None

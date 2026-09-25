@@ -196,7 +196,16 @@ async def handle_search_select(
         return
 
     track = tracks[idx]
-    await bot_api_client.answer_callback_query(cq_id, f"Playing '{track.title}'...")
+    await bot_api_client.answer_callback_query(cq_id, f"Preparing '{track.title}'...")
+    
+    # Ensure selected metadata track is resolved to playable media before playback
+    if not track.playable_source:
+        resolved_ok = await extractor.download_track(track)
+        if not resolved_ok:
+            fallback_tr = await extractor.extract(track.title, user_id, username)
+            if fallback_tr and fallback_tr.playable_source:
+                track = fallback_tr
+
     search_rich = build_search_rich_ui("Music", tracks, selected_idx=idx)
     await bot_api_client.edit_message_rich_text(chat_id, message_id, search_rich)
 
