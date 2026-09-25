@@ -965,13 +965,12 @@ class MediaExtractor:
                 "outtmpl": dest_path,
                 "noplaylist": True,
                 "quiet": True,
-                "no_warnings": True,
+                "no_warnings": False,
                 "nocheckcertificate": True,
                 "retries": 2,
                 "fragment_retries": 2,
                 "socket_timeout": 20,
                 "continuedl": True,
-                "js_runtimes": {"node": {}},
                 "logger": YtDlpQuietLogger(),
             }
             cookie_file = self.cookies_path if use_cookies else None
@@ -994,13 +993,21 @@ class MediaExtractor:
         except Exception as e:
             err_str = str(e).strip()
             sanitized_err = re.sub(r'(cookie|token|auth|key|password)=[\w\.-]+', r'\1=***', err_str, flags=re.IGNORECASE)
-            logger.warning(
-                "[YTDLP_ERROR] video_id=%s exception_type=%s error=\"%s\" mode=%s",
-                video_id,
-                type(e).__name__,
-                sanitized_err[:250],
-                "cookies" if (use_cookies and self.cookies_path) else "no_cookies",
-            )
+            
+            # Classify errors securely
+            err_lower = sanitized_err.lower()
+            if "page needs to be reloaded" in err_lower or "reload" in err_lower:
+                classification = "YOUTUBE_EXTRACTION_OR_AUTH_ERROR"
+            elif "sign in to confirm" in err_lower or "not a bot" in err_lower or "bot" in err_lower:
+                classification = "YOUTUBE_BOT_CHECK"
+            else:
+                classification = "YOUTUBE_DOWNLOAD_FAILED"
+            
+            logger.warning("[YTDLP_ERROR]")
+            logger.warning("video_id=%s", video_id)
+            logger.warning("mode=%s", "cookies" if (use_cookies and self.cookies_path) else "no_cookies")
+            logger.warning("classification=%s", classification)
+            logger.warning("error=%s", sanitized_err)
             return False
 
     def _download_video_ytdlp(self, url_or_query: str, dest_path: str, video_id: str = "unknown", use_cookies: bool = True) -> bool:
@@ -1011,13 +1018,12 @@ class MediaExtractor:
                 "outtmpl": dest_path,
                 "noplaylist": True,
                 "quiet": True,
-                "no_warnings": True,
+                "no_warnings": False,
                 "nocheckcertificate": True,
                 "retries": 2,
                 "fragment_retries": 2,
                 "socket_timeout": 20,
                 "continuedl": True,
-                "js_runtimes": {"node": {}},
                 "logger": YtDlpQuietLogger(),
             }
             cookie_file = self.cookies_path if use_cookies else None
@@ -1040,13 +1046,21 @@ class MediaExtractor:
         except Exception as e:
             err_str = str(e).strip()
             sanitized_err = re.sub(r'(cookie|token|auth|key|password)=[\w\.-]+', r'\1=***', err_str, flags=re.IGNORECASE)
-            logger.warning(
-                "[YTDLP_ERROR] video_id=%s exception_type=%s error=\"%s\" mode=%s",
-                video_id,
-                type(e).__name__,
-                sanitized_err[:250],
-                "cookies" if (use_cookies and self.cookies_path) else "no_cookies",
-            )
+            
+            # Classify errors securely
+            err_lower = sanitized_err.lower()
+            if "page needs to be reloaded" in err_lower or "reload" in err_lower:
+                classification = "YOUTUBE_EXTRACTION_OR_AUTH_ERROR"
+            elif "sign in to confirm" in err_lower or "not a bot" in err_lower or "bot" in err_lower:
+                classification = "YOUTUBE_BOT_CHECK"
+            else:
+                classification = "YOUTUBE_DOWNLOAD_FAILED"
+            
+            logger.warning("[YTDLP_ERROR]")
+            logger.warning("video_id=%s", video_id)
+            logger.warning("mode=%s", "cookies" if (use_cookies and self.cookies_path) else "no_cookies")
+            logger.warning("classification=%s", classification)
+            logger.warning("error=%s", sanitized_err)
             return False
 
     def _download_soundcloud_fallback(self, search_target: str, dest_path: str, video_id: str = "unknown") -> bool:
@@ -1251,14 +1265,11 @@ class MediaExtractor:
         yt_watch_url = f"https://www.youtube.com/watch?v={video_id}"
         dest_template = os.path.join(cache_dir, f"{video_id}.%(ext)s")
 
-        logger.info(
-            "[YTDLP] download_started track_id=%s source=%s cookies_configured=%s cache_hit=no download_attempt=1 target=\"%s\" is_video=%s",
-            video_id,
-            getattr(track, "source", "youtube"),
-            "yes" if has_cookies else "no",
-            sanitize_text(track.title, 40),
-            is_video,
-        )
+        logger.info("[YTDLP] download_started")
+        logger.info("track_id=%s", video_id)
+        logger.info("cookies_configured=%s", "yes" if has_cookies else "no")
+        logger.info("cache_hit=no")
+        logger.info("attempt=1")
 
         # 1. Primary yt-dlp download (MODE A with cookies if configured)
         success = False
@@ -1283,7 +1294,7 @@ class MediaExtractor:
 
         # 2. MODE B fallback download (without cookies if MODE A with cookies failed)
         if has_cookies and not cached_file:
-            logger.info("[YTDLP] Primary download with cookies failed for %s. Retrying MODE B fallback (no cookies)...", video_id)
+            logger.info("[YTDLP] retrying_without_cookies")
             if is_video:
                 success_b = await loop.run_in_executor(None, self._download_video_ytdlp, yt_watch_url, dest_template, video_id, False)
             else:
@@ -1307,7 +1318,7 @@ class MediaExtractor:
             clean_artist = self._clean_search_query(track.artist) if track.artist and track.artist != "YouTube Music" else ""
             fallback_query = f"{clean_title} {clean_artist}".strip() or track.title
             logger.info(
-                "[MEDIA] Primary YouTube download failed for '%s' (id=%s). Initiating multi-provider fallback for query: '%s' (attempt=2)",
+                "[MEDIA] Primary YouTube download failed for '%s' (id=%s). Initiating optional SoundCloud fallback for query: '%s'",
                 track.title,
                 video_id,
                 fallback_query,
@@ -1320,32 +1331,12 @@ class MediaExtractor:
             if sc_success and cached_file and os.path.exists(cached_file) and os.path.getsize(cached_file) > 0:
                 sz = os.path.getsize(cached_file)
                 logger.info(
-                    "[MEDIA] Multi-provider fallback SoundCloud download succeeded for '%s' (file_size=%d)",
+                    "[MEDIA] Optional SoundCloud fallback download succeeded for '%s' (file_size=%d)",
                     track.title,
                     sz,
                 )
                 self._clean_cache_dir(cache_dir)
                 return cached_file
-
-            # JioSaavn fallback
-            try:
-                from player.providers.jiosaavn import jiosaavn_provider
-                jio_tracks = await loop.run_in_executor(None, jiosaavn_provider.search, fallback_query, 3, track.requester_user_id, track.requester_name)
-                for jt in jio_tracks:
-                    if jt.stream_url and "youtube.com" not in jt.stream_url:
-                        jio_dest = os.path.join(cache_dir, f"{video_id}.mp3")
-                        jio_success = await loop.run_in_executor(None, self._download_direct_url, jt.stream_url, jio_dest)
-                        if jio_success and os.path.exists(jio_dest) and os.path.getsize(jio_dest) > 0:
-                            sz = os.path.getsize(jio_dest)
-                            logger.info(
-                                "[MEDIA] Multi-provider fallback JioSaavn download succeeded for '%s' (file_size=%d)",
-                                track.title,
-                                sz,
-                            )
-                            self._clean_cache_dir(cache_dir)
-                            return jio_dest
-            except Exception as e:
-                logger.debug("[MEDIA] JioSaavn fallback note: %s", str(e))
 
         logger.warning(
             "[YTDLP] download_failed track_id=%s source=%s cookies_configured=%s error_code=YTDLP_DOWNLOAD_FAILED",

@@ -129,25 +129,23 @@ def log_cookie_status_at_startup() -> None:
 
     try:
         import yt_dlp
-        ytdlp_ver = getattr(yt_dlp, "__version__", "unknown")
-    except Exception:
-        ytdlp_ver = "unknown"
+        import yt_dlp.version
+        ytdlp_ver = getattr(yt_dlp.version, "__version__", None) or getattr(yt_dlp, "__version__", None) or "unknown"
+    except Exception as e:
+        ytdlp_ver = f"ImportError: {str(e)}"
 
     status_code = get_cookie_diagnostic_status()
     cfile = get_youtube_cookie_file()
-    has_cookies = status_code == "COOKIES_READY"
+    has_cookies = (status_code == "COOKIES_READY")
     cookie_size = os.path.getsize(cfile) if (cfile and os.path.exists(cfile)) else 0
     cookie_format = "valid" if has_cookies else "invalid" if status_code == "COOKIES_INVALID" else "none"
 
     logger.info("[YTDLP] version=%s", ytdlp_ver)
-    logger.info(
-        "[YTDLP] cookies_status=%s cookies_configured=%s cookie_file_created=%s cookie_file_size=%d cookie_file_format=%s",
-        status_code,
-        "yes" if has_cookies else "no",
-        "yes" if cfile and os.path.exists(cfile) else "no",
-        cookie_size,
-        cookie_format,
-    )
+    logger.info("[YTDLP] cookies_status=%s", "COOKIES_READY" if has_cookies else "UNAVAILABLE")
+    logger.info("[YTDLP] cookie_file_created=%s", "yes" if cfile and os.path.exists(cfile) else "no")
+    logger.info("[YTDLP] cookie_file_size=%d", cookie_size)
+    logger.info("[YTDLP] cookie_file_format=%s", cookie_format)
+    logger.info("[YTDLP] cookie_file_usable=unknown")
 
 
 def cleanup_cookie_files() -> None:
