@@ -528,15 +528,12 @@ class MediaExtractor:
 
         loop = asyncio.get_running_loop()
 
-        # 1. Direct YouTube search scraper (Zero API key required, 100% reliable)
+        # 1. Use advanced YouTubeProvider search (Scraper with API v3 fallback)
+        from player.providers.youtube import youtube_provider
         yt_scraper_results = await loop.run_in_executor(
-            None, self._search_youtube_ytinitialdata, clean_input, limit, requester_id, requester_name
+            None, youtube_provider.search, clean_input, limit, requester_id, requester_name
         )
-
-        # 2. Search YouTube API v3 if YOUTUBE_API_KEY is configured
-        yt_api_results = await loop.run_in_executor(
-            None, self._search_youtube_api_v3, clean_input, limit, requester_id, requester_name
-        )
+        yt_api_results = [] # Resolved seamlessly inside provider.search
 
         # 3. Search JioSaavn
         jio_results = await loop.run_in_executor(
@@ -1250,6 +1247,7 @@ class MediaExtractor:
         loop = asyncio.get_running_loop()
         has_cookies = bool(self.cookies_path and os.path.exists(self.cookies_path))
         from player.models import is_direct_media_url
+        from player.providers.youtube import youtube_provider
 
         # Check if direct media stream URL is provided (e.g. JioSaavn / SoundCloud / direct MP3 / CDN stream)
         if track.stream_url and is_direct_media_url(track.stream_url) and "youtube.com/watch" not in track.stream_url and "youtu.be" not in track.stream_url:
@@ -1271,7 +1269,48 @@ class MediaExtractor:
         logger.info("cache_hit=no")
         logger.info("attempt=1")
 
-        # 1. Primary yt-dlp download (MODE A with cookies if configured)
+        # 1. First try resolving direct stream URL using YouTubeProvider's advanced multi-attempt emulators
+        resolved_track = None
+        try:
+            if is_video:
+                resolved_track = await loop.run_in_executor(
+                    None,
+                    youtube_provider._extract_video_ytdlp,
+                    yt_watch_url,
+                    True,
+                    int(track.requester_user_id or 0),
+                    getattr(track, "requester_name", "User")
+                )
+            else:
+                resolved_track = await loop.run_in_executor(
+                    None,
+                    youtube_provider.get_track,
+                    video_id,
+                    int(track.requester_user_id or 0),
+                    getattr(track, "requester_name", "User")
+                )
+        except Exception as e:
+            logger.debug("YouTubeProvider stream resolution exception: %s", str(e))
+
+        if resolved_track and resolved_track.stream_url:
+            ext = "mp4" if is_video else ("webm" if "webm" in resolved_track.stream_url else "m4a")
+            dest_file = os.path.join(cache_dir, f"{video_id}.{ext}")
+            success = await loop.run_in_executor(None, self._download_direct_url, resolved_track.stream_url, dest_file)
+            if success and os.path.exists(dest_file) and os.path.getsize(dest_file) > 0:
+                sz = os.path.getsize(dest_file)
+                logger.info(
+                    "[YTDLP] download_success track_id=%s source=%s cookies_configured=%s cache_hit=no file_exists=true file_size=%d path=%s",
+                    video_id,
+                    "youtube",
+                    "yes" if has_cookies else "no",
+                    sz,
+                    dest_file,
+                )
+                self._clean_cache_dir(cache_dir)
+                return dest_file
+
+        # 2. Fallback to local yt-dlp download if direct stream resolution/download failed or was blocked
+        logger.info("[YTDLP] Direct stream extraction failed or was blocked. Retrying local downloader fallback...")
         success = False
         if is_video:
             success = await loop.run_in_executor(None, self._download_video_ytdlp, yt_watch_url, dest_template, video_id, True)
@@ -1292,7 +1331,7 @@ class MediaExtractor:
             self._clean_cache_dir(cache_dir)
             return cached_file
 
-        # 2. MODE B fallback download (without cookies if MODE A with cookies failed)
+        # 3. MODE B fallback download (without cookies if MODE A with cookies failed)
         if has_cookies and not cached_file:
             logger.info("[YTDLP] retrying_without_cookies")
             if is_video:
@@ -1312,7 +1351,7 @@ class MediaExtractor:
                 self._clean_cache_dir(cache_dir)
                 return cached_file_b
 
-        # 3. Multi-provider Fallback Audio Download if YouTube yt-dlp failed
+        # 4. Multi-provider Fallback Audio Download if YouTube yt-dlp failed
         if not is_video:
             clean_title = self._clean_search_query(track.title)
             clean_artist = self._clean_search_query(track.artist) if track.artist and track.artist != "YouTube Music" else ""
