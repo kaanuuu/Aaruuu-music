@@ -13,69 +13,18 @@ import struct
 from typing import Any, Dict, Optional
 from utils.logging import logger
 
-# Flexible PyTgCalls imports with Pyrogram v2 backward compatibility patches
+# Standard PyTgCalls and Pyrogram imports
 PYTGCALLS_AVAILABLE = False
 Client = None
 PyTgCalls = None
 AudioPiped = None
 MediaStream = None
+pyrogram = None
+pytgcalls = None
 
 try:
     import pyrogram
-    import pyrogram.errors
-    import pyrogram.utils
-
-    # 1. Missing TL Types & Classes for PyTgCalls (e.g. InputGroupCallSlug) removed to prevent Circular reference/Pydantic serialization errors.
-    pass
-
-    # 2. Patch missing legacy errors that PyTgCalls imports from pyrogram.errors in Pyrogram v2
-    _legacy_exceptions = [
-        "GroupcallForbidden",
-        "GroupcallInvalid",
-        "GroupcallAlreadyStarted",
-        "GroupcallNotFound",
-        "GroupCallNotFound",
-        "GroupCallInvalid",
-        "NoActiveGroupCall",
-        "UserAlreadyParticipant",
-        "PhoneCallDiscarded",
-    ]
-    for _name in _legacy_exceptions:
-        if not hasattr(pyrogram.errors, _name):
-            _exc = type(_name, (Exception,), {})
-            setattr(pyrogram.errors, _name, _exc)
-            try:
-                import pyrogram.errors.exceptions
-                setattr(pyrogram.errors.exceptions, _name, _exc)
-            except Exception:
-                pass
-
-    def _patched_errors_getattr(name: str):
-        _exc = type(name, (Exception,), {})
-        setattr(pyrogram.errors, name, _exc)
-        return _exc
-
-    pyrogram.errors.__getattr__ = _patched_errors_getattr
-
-    # 2. Modern Telegram 64-bit channel IDs patch (e.g. -1003952024411)
-    if hasattr(pyrogram.utils, "MIN_CHANNEL_ID"):
-        pyrogram.utils.MIN_CHANNEL_ID = -10099999999999
-    if hasattr(pyrogram.utils, "MAX_CHANNEL_ID"):
-        pyrogram.utils.MAX_CHANNEL_ID = -1000000000000
-
-    _orig_get_peer_type = getattr(pyrogram.utils, "get_peer_type", None)
-    if _orig_get_peer_type:
-        def _safe_get_peer_type(peer_id: int) -> str:
-            if peer_id < 0:
-                if peer_id <= -1000000000000:
-                    return "channel"
-                return "chat"
-            elif peer_id > 0:
-                return "user"
-            raise ValueError(f"Peer id invalid: {peer_id}")
-
-        pyrogram.utils.get_peer_type = _safe_get_peer_type
-
+    import pytgcalls
     from pyrogram import Client
     from pytgcalls import PyTgCalls
 
@@ -390,34 +339,13 @@ class VoiceChatAssistant:
         chat_type: Optional[str] = None,
     ) -> bool:
         """
-        Ensures that the assistant client has resolved the chat/channel peer and access_hash.
-        Works for regular members without requiring admin status.
+        Ensures that the assistant client has resolved the chat/channel peer and access_hash
+        using official Pyrogram resolution mechanisms. Works for regular members without requiring admin status.
         """
         if not self.app or not self.is_connected:
             return False
 
-        # 1. If public group username is provided, resolve directly by username to fetch access_hash
-        if chat_username and isinstance(chat_username, str):
-            clean_un = chat_username.replace("@", "").strip()
-            if clean_un:
-                try:
-                    peer = await self.app.resolve_peer(clean_un)
-                    if peer:
-                        self._resolved_peers.add(chat_id)
-                        return True
-                except Exception as un_err:
-                    logger.debug("Voice Chat: resolve_peer(@%s) note: %s", clean_un, str(un_err))
-
-        # 2. Try direct resolve_peer if already cached in Pyrogram
-        try:
-            peer = await self.app.resolve_peer(chat_id)
-            if peer:
-                self._resolved_peers.add(chat_id)
-                return True
-        except Exception:
-            pass
-
-        # 3. Try get_chat(chat_id) directly
+        # 1. Direct native Pyrogram get_chat
         try:
             chat = await self.app.get_chat(chat_id)
             if chat:
@@ -426,21 +354,19 @@ class VoiceChatAssistant:
         except Exception as e:
             logger.debug("Voice Chat: get_chat(%s) note: %s", chat_id, str(e))
 
-        # 4. Use Pyrogram raw MTProto GetAllChats / GetDialogs to populate peer database
-        try:
-            from pyrogram.raw import functions
-            all_chats_res = await self.app.invoke(functions.messages.GetAllChats(except_ids=[]))
-            if hasattr(all_chats_res, "chats"):
-                for c in all_chats_res.chats:
-                    raw_id = getattr(c, "id", None)
-                    if raw_id:
-                        self._resolved_peers.add(int(f"-100{raw_id}"))
-                        self._resolved_peers.add(raw_id)
-                        self._resolved_peers.add(-raw_id)
-        except Exception as raw_err:
-            logger.debug("Voice Chat: GetAllChats note: %s", str(raw_err))
+        # 2. If public group username is provided, resolve directly by username
+        if chat_username and isinstance(chat_username, str):
+            clean_un = chat_username.replace("@", "").strip()
+            if clean_un:
+                try:
+                    chat = await self.app.get_chat(clean_un)
+                    if chat:
+                        self._resolved_peers.add(chat_id)
+                        return True
+                except Exception as un_err:
+                    logger.debug("Voice Chat: get_chat(@%s) note: %s", clean_un, str(un_err))
 
-        # 5. Try scanning dialogs across main (folder 0) and archive (folder 1)
+        # 3. Scanning dialogs across main (folder 0) and archive (folder 1) to populate Pyrogram peer cache
         try:
             for f_id in (0, 1):
                 try:
@@ -454,14 +380,14 @@ class VoiceChatAssistant:
         except Exception as d_err:
             logger.debug("Voice Chat: get_dialogs note: %s", str(d_err))
 
-        # 6. Final verification of resolve_peer
+        # 4. Final verification of resolve_peer
         try:
             peer = await self.app.resolve_peer(chat_id)
             if peer:
                 self._resolved_peers.add(chat_id)
                 return True
-        except Exception:
-            pass
+        except Exception as res_err:
+            logger.debug("Voice Chat: resolve_peer(%s) note: %s", chat_id, str(res_err))
 
         return chat_id in self._resolved_peers
 
@@ -762,6 +688,43 @@ class VoiceChatAssistant:
                 logger.info("[MEDIA-PIPELINE DEBUG] 8. Creating PyTgCalls media stream object for chat %s...", chat_id)
                 stream_obj = _build_stream(playable_stream)
                 logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object of type: %s", type(stream_obj).__name__)
+
+                # [VC DEBUG] High-value diagnostic logging before PyTgCalls call
+                peer_type = "unknown"
+                peer_raw_id = chat_id
+                if self.app and self.is_connected:
+                    try:
+                        resolved_p = await self.app.resolve_peer(chat_id)
+                        if resolved_p:
+                            peer_type = type(resolved_p).__name__
+                            peer_raw_id = getattr(resolved_p, "channel_id", getattr(resolved_p, "chat_id", getattr(resolved_p, "user_id", chat_id)))
+                    except Exception:
+                        pass
+
+                pytgcalls_ver = getattr(pytgcalls, "__version__", "2.x") if pytgcalls else "unknown"
+                pyrogram_ver = getattr(pyrogram, "__version__", "2.0.106") if pyrogram else "unknown"
+
+                logger.info(
+                    "[VC DEBUG]\n"
+                    "chat_id=%s\n"
+                    "chat_type=%s\n"
+                    "chat_title=%s\n"
+                    "assistant_id=%s\n"
+                    "peer_type=%s\n"
+                    "peer_id=%s\n"
+                    "py-tgcalls-version=%s\n"
+                    "pyrogram-version=%s\n"
+                    "call_instance=%s",
+                    chat_id,
+                    chat_type or "supergroup/group",
+                    chat_title or "Unknown",
+                    self.assistant_id,
+                    peer_type,
+                    peer_raw_id,
+                    pytgcalls_ver,
+                    pyrogram_ver,
+                    id(self.pytgcalls),
+                )
 
                 async def _do_stream():
                     already_connected = await self.is_call_active(chat_id)
