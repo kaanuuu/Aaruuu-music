@@ -367,11 +367,17 @@ async def _finish_playback_flow(
     track.media_type = "video" if is_video else "audio"
 
     # Verify and auto-invite assistant in group chats before streaming
+    chat_username = message.get("chat", {}).get("username")
+    chat_title = message.get("chat", {}).get("title")
+    chat_type = message.get("chat", {}).get("type")
+
     if chat_id < 0 and voice_assistant.is_configured:
         if voice_assistant.is_connected and voice_assistant.assistant_id:
             try:
                 # 1. First check if assistant client can directly resolve/access the chat as a member
-                is_member = await voice_assistant.is_member_of_chat(chat_id)
+                is_member = await voice_assistant.is_member_of_chat(
+                    chat_id, chat_username=chat_username, chat_title=chat_title, chat_type=chat_type
+                )
 
                 # 2. If not detected via assistant, check via Bot API
                 if not is_member:
@@ -419,12 +425,12 @@ async def _finish_playback_flow(
         {"id": user_id, "name": first_name, "username": username, "mention": requester_mention},
     )
 
-    if voice_assistant.last_error and not state.is_playing and not is_now_playing:
-        err_text = voice_assistant.last_error
+    last_err = voice_assistant.get_last_error(chat_id)
+    if last_err and not state.is_playing and not is_now_playing:
         err_msg = (
             f"❌ {to_bold_sans('PLAYBACK ERROR')}\n\n"
             f"• {to_small_caps('track')}: {track.title}\n"
-            f"• {to_small_caps('reason')}: {err_text}"
+            f"• {to_small_caps('reason')}: {last_err}"
         )
         if status_msg_id:
             await bot_api_client.edit_message_text(chat_id, status_msg_id, err_msg, parse_mode="HTML")

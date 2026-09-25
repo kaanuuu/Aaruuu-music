@@ -253,11 +253,17 @@ class VoiceChatAssistant:
         self.app: Optional[Any] = None
         self.pytgcalls: Optional[Any] = None
         self.active_chats: Dict[int, Any] = {}
+        self.chat_errors: Dict[int, Optional[str]] = {}
+        self.last_error: Optional[str] = None
         self._resolved_peers: set = set()
         self.assistant_id: Optional[int] = None
         self.assistant_username: Optional[str] = None
         self.assistant_name: Optional[str] = None
         self.is_connected: bool = False
+
+    def get_last_error(self, chat_id: int) -> Optional[str]:
+        """Returns the isolated last error message for a specific chat."""
+        return self.chat_errors.get(chat_id) or self.last_error
 
     def check_status(self) -> Dict[str, Any]:
         """Returns assistant status without exposing secrets."""
@@ -376,7 +382,13 @@ class VoiceChatAssistant:
             else:
                 logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", err_msg)
 
-    async def resolve_and_cache_peer(self, chat_id: int) -> bool:
+    async def resolve_and_cache_peer(
+        self,
+        chat_id: int,
+        chat_username: Optional[str] = None,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> bool:
         """
         Ensures that the assistant client has resolved the chat/channel peer and access_hash.
         Works for regular members without requiring admin status.
@@ -384,7 +396,19 @@ class VoiceChatAssistant:
         if not self.app or not self.is_connected:
             return False
 
-        # 1. Try direct resolve_peer if already cached in Pyrogram
+        # 1. If public group username is provided, resolve directly by username to fetch access_hash
+        if chat_username and isinstance(chat_username, str):
+            clean_un = chat_username.replace("@", "").strip()
+            if clean_un:
+                try:
+                    peer = await self.app.resolve_peer(clean_un)
+                    if peer:
+                        self._resolved_peers.add(chat_id)
+                        return True
+                except Exception as un_err:
+                    logger.debug("Voice Chat: resolve_peer(@%s) note: %s", clean_un, str(un_err))
+
+        # 2. Try direct resolve_peer if already cached in Pyrogram
         try:
             peer = await self.app.resolve_peer(chat_id)
             if peer:
@@ -393,7 +417,7 @@ class VoiceChatAssistant:
         except Exception:
             pass
 
-        # 2. Try get_chat(chat_id) directly
+        # 3. Try get_chat(chat_id) directly
         try:
             chat = await self.app.get_chat(chat_id)
             if chat:
@@ -402,17 +426,35 @@ class VoiceChatAssistant:
         except Exception as e:
             logger.debug("Voice Chat: get_chat(%s) note: %s", chat_id, str(e))
 
-        # 3. Try scanning dialogs to cache access_hash for all current chats
+        # 4. Use Pyrogram raw MTProto GetAllChats / GetDialogs to populate peer database
         try:
-            async for dialog in self.app.get_dialogs():
-                if dialog.chat and dialog.chat.id:
-                    self._resolved_peers.add(dialog.chat.id)
-                    if dialog.chat.id == chat_id:
-                        return True
+            from pyrogram.raw import functions
+            all_chats_res = await self.app.invoke(functions.messages.GetAllChats(except_ids=[]))
+            if hasattr(all_chats_res, "chats"):
+                for c in all_chats_res.chats:
+                    raw_id = getattr(c, "id", None)
+                    if raw_id:
+                        self._resolved_peers.add(int(f"-100{raw_id}"))
+                        self._resolved_peers.add(raw_id)
+                        self._resolved_peers.add(-raw_id)
+        except Exception as raw_err:
+            logger.debug("Voice Chat: GetAllChats note: %s", str(raw_err))
+
+        # 5. Try scanning dialogs across main (folder 0) and archive (folder 1)
+        try:
+            for f_id in (0, 1):
+                try:
+                    async for dialog in self.app.get_dialogs(folder_id=f_id):
+                        if dialog.chat and dialog.chat.id:
+                            self._resolved_peers.add(dialog.chat.id)
+                            if dialog.chat.id == chat_id:
+                                return True
+                except Exception:
+                    pass
         except Exception as d_err:
             logger.debug("Voice Chat: get_dialogs note: %s", str(d_err))
 
-        # 4. Check if resolved now
+        # 6. Final verification of resolve_peer
         try:
             peer = await self.app.resolve_peer(chat_id)
             if peer:
@@ -423,7 +465,13 @@ class VoiceChatAssistant:
 
         return chat_id in self._resolved_peers
 
-    async def is_member_of_chat(self, chat_id: int) -> bool:
+    async def is_member_of_chat(
+        self,
+        chat_id: int,
+        chat_username: Optional[str] = None,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> bool:
         """
         Checks if the assistant userbot is present as a member in the specified chat.
         Works as a regular member without admin permissions.
@@ -432,7 +480,9 @@ class VoiceChatAssistant:
             return True
         if not self.app or not self.is_connected:
             return False
-        return await self.resolve_and_cache_peer(chat_id)
+        return await self.resolve_and_cache_peer(
+            chat_id, chat_username=chat_username, chat_title=chat_title, chat_type=chat_type
+        )
 
     async def join_chat(self, chat_id_or_invite_link: Any) -> bool:
         """Attempts to join a group using invite link or chat ID."""
@@ -467,67 +517,154 @@ class VoiceChatAssistant:
         if not self.pytgcalls:
             return False
         import inspect
-        # 1. Check pytgcalls.active_calls (standard in modern PyTgCalls)
-        if hasattr(self.pytgcalls, "active_calls"):
-            try:
-                calls = self.pytgcalls.active_calls
-                if inspect.iscoroutine(calls) or inspect.iscoroutinefunction(calls):
-                    calls = await calls
-                elif inspect.isawaitable(calls):
-                    calls = await calls
-                
-                if hasattr(calls, "__contains__"):
-                    try:
-                        if chat_id in calls:
-                            return True
-                    except Exception:
-                        pass
-                for c in calls:
-                    if getattr(c, "chat_id", None) == chat_id:
-                        return True
-            except Exception:
-                pass
-        # 2. Check pytgcalls.calls
-        if hasattr(self.pytgcalls, "calls"):
-            try:
-                calls = self.pytgcalls.calls
-                if inspect.iscoroutine(calls) or inspect.iscoroutinefunction(calls):
-                    calls = await calls
-                elif inspect.isawaitable(calls):
-                    calls = await calls
-                
-                if hasattr(calls, "__contains__"):
-                    try:
-                        if chat_id in calls:
-                            return True
-                    except Exception:
-                        pass
-                if isinstance(calls, list):
-                    for c in calls:
-                        if getattr(c, "chat_id", None) == chat_id:
-                            return True
-                elif isinstance(calls, dict):
-                    return chat_id in calls
-            except Exception:
-                pass
-        # 3. Fallback to our internal active_chats tracker
-        return chat_id in self.active_chats
 
-    async def play_audio(self, chat_id: int, audio_source: str, seek_seconds: float = 0.0, is_video: bool = False) -> bool:
-        """Streams audio_source or video into the group voice chat call."""
+        # 1. Authoritative per-chat tracker check
+        if chat_id in self.active_chats:
+            return True
+
+        # 2. PyTgCalls active_calls check
+        try:
+            if hasattr(self.pytgcalls, "active_calls"):
+                calls = getattr(self.pytgcalls, "active_calls")
+                if callable(calls):
+                    calls = calls()
+                if inspect.isawaitable(calls):
+                    calls = await calls
+                if calls:
+                    if hasattr(calls, "__contains__") and chat_id in calls:
+                        return True
+                    if isinstance(calls, (list, tuple, set)):
+                        for c in calls:
+                            if getattr(c, "chat_id", None) == chat_id:
+                                return True
+        except Exception:
+            pass
+
+        # 3. PyTgCalls calls / CallHolder check
+        try:
+            if hasattr(self.pytgcalls, "calls"):
+                calls_attr = getattr(self.pytgcalls, "calls")
+                if callable(calls_attr):
+                    calls_attr = calls_attr()
+                if inspect.isawaitable(calls_attr):
+                    calls_attr = await calls_attr
+                if calls_attr:
+                    if hasattr(calls_attr, "get_call"):
+                        gc = calls_attr.get_call(chat_id)
+                        if inspect.isawaitable(gc):
+                            gc = await gc
+                        if gc:
+                            return True
+                    if hasattr(calls_attr, "get"):
+                        gc = calls_attr.get(chat_id)
+                        if inspect.isawaitable(gc):
+                            gc = await gc
+                        if gc:
+                            return True
+                    if hasattr(calls_attr, "calls"):
+                        raw_c = getattr(calls_attr, "calls")
+                        if callable(raw_c):
+                            raw_c = raw_c()
+                        if inspect.isawaitable(raw_c):
+                            raw_c = await raw_c
+                        if raw_c:
+                            if isinstance(raw_c, (list, tuple, set)):
+                                for c in raw_c:
+                                    if getattr(c, "chat_id", None) == chat_id:
+                                        return True
+                            elif isinstance(raw_c, dict) and chat_id in raw_c:
+                                return True
+                    if isinstance(calls_attr, (list, tuple, set)):
+                        for c in calls_attr:
+                            if getattr(c, "chat_id", None) == chat_id:
+                                return True
+                    elif isinstance(calls_attr, dict) and chat_id in calls_attr:
+                        return True
+        except Exception:
+            pass
+
+        return False
+
+    async def _log_channel_invalid_diagnostics(
+        self,
+        chat_id: int,
+        original_err: Exception,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> None:
+        """Logs comprehensive per-group diagnostic details upon encountering CHANNEL_INVALID."""
+        can_resolve = False
+        resolved_peer_type = "unresolved"
+        vc_active = False
+
+        if self.app and self.is_connected:
+            try:
+                peer = await self.app.resolve_peer(chat_id)
+                if peer:
+                    can_resolve = True
+                    resolved_peer_type = type(peer).__name__
+            except Exception as res_e:
+                resolved_peer_type = f"Failed: {str(res_e)}"
+
+            try:
+                chat_obj = await self.app.get_chat(chat_id)
+                if chat_obj:
+                    can_resolve = True
+                    if not chat_title:
+                        chat_title = getattr(chat_obj, "title", None) or getattr(chat_obj, "first_name", None)
+                    if not chat_type:
+                        chat_type = str(getattr(chat_obj, "type", "unknown"))
+            except Exception:
+                pass
+
+        vc_active = await self.is_call_active(chat_id)
+
+        logger.error(
+            "[CHANNEL_INVALID DIAGNOSTICS]\n"
+            "• Current Chat ID: %s\n"
+            "• Chat Type: %s\n"
+            "• Chat Title: %s\n"
+            "• Assistant User ID: %s (@%s)\n"
+            "• Assistant Can Resolve Chat: %s (Peer: %s)\n"
+            "• Voice Chat Active: %s\n"
+            "• Underlying Error: %s",
+            chat_id,
+            chat_type or "supergroup/group",
+            chat_title or "Unknown",
+            self.assistant_id,
+            self.assistant_username or "N/A",
+            can_resolve,
+            resolved_peer_type,
+            vc_active,
+            str(original_err),
+        )
+
+    async def play_audio(
+        self,
+        chat_id: int,
+        audio_source: str,
+        seek_seconds: float = 0.0,
+        is_video: bool = False,
+        chat_username: Optional[str] = None,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> bool:
+        """Streams audio_source or video into the group voice chat call for the specific chat_id."""
         if not audio_source or not isinstance(audio_source, str):
             err_msg = "No playable audio source or downloaded file available for streaming."
             self.last_error = err_msg
+            self.chat_errors[chat_id] = err_msg
             logger.warning("Voice Chat: Cannot play audio in chat %s: %s", chat_id, err_msg)
             return False
 
         if self.pytgcalls and self.is_connected:
             try:
-                # Playable stream URL
                 playable_stream = audio_source
 
-                # Fast peer verification & access hash caching before PyTgCalls call
-                await self.resolve_and_cache_peer(chat_id)
+                # Fast peer verification & access hash caching for CURRENT group before PyTgCalls call
+                await self.resolve_and_cache_peer(
+                    chat_id, chat_username=chat_username, chat_title=chat_title, chat_type=chat_type
+                )
 
                 # Pipeline Diagnostics & Logs
                 is_http = playable_stream.startswith(("http://", "https://"))
@@ -566,7 +703,6 @@ class VoiceChatAssistant:
                     if not target_url or not isinstance(target_url, str):
                         return None
                     is_remote = target_url.startswith(("http://", "https://"))
-                    # If local, we must NOT pass http specific parameters like headers or reconnect unless seeking is active
                     if is_remote:
                         params = ffmpeg_params
                     else:
@@ -623,7 +759,7 @@ class VoiceChatAssistant:
                                 pass
                     return target_url
 
-                logger.info("[MEDIA-PIPELINE DEBUG] 8. Creating PyTgCalls media stream object...")
+                logger.info("[MEDIA-PIPELINE DEBUG] 8. Creating PyTgCalls media stream object for chat %s...", chat_id)
                 stream_obj = _build_stream(playable_stream)
                 logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object of type: %s", type(stream_obj).__name__)
 
@@ -632,7 +768,7 @@ class VoiceChatAssistant:
                     # PyTgCalls v1 API (join_group_call)
                     if hasattr(self.pytgcalls, "join_group_call"):
                         if already_connected and hasattr(self.pytgcalls, "change_stream"):
-                            logger.info("[MEDIA-PIPELINE DEBUG] Already connected in PyTgCalls v1. Changing stream...")
+                            logger.info("[MEDIA-PIPELINE DEBUG] Already connected in PyTgCalls v1 for chat %s. Changing stream...", chat_id)
                             await self.pytgcalls.change_stream(chat_id, stream_obj)
                         else:
                             logger.info("[MEDIA-PIPELINE DEBUG] Invoking PyTgCalls join_group_call() for chat %s", chat_id)
@@ -651,20 +787,28 @@ class VoiceChatAssistant:
 
                 try:
                     await _do_stream()
-                    logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully!")
+                    logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully for chat %s!", chat_id)
                 except Exception as inner_e:
                     err_str = str(inner_e).lower()
-                    logger.warning("[MEDIA-PIPELINE DEBUG] PyTgCalls stream call encountered exception: %s", str(inner_e))
+                    logger.warning("[MEDIA-PIPELINE DEBUG] PyTgCalls stream call encountered exception in chat %s: %s", chat_id, str(inner_e))
+                    if "channel_invalid" in err_str:
+                        await self._log_channel_invalid_diagnostics(chat_id, inner_e, chat_title, chat_type)
+
                     # Attempt 1 retry after refreshing peer cache
                     if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str:
-                        logger.info("Voice Chat: Initial stream join failed (%s). Refreshing peer resolution and retrying...", str(inner_e))
+                        logger.info("Voice Chat: Initial stream join failed in chat %s (%s). Refreshing peer resolution and retrying...", chat_id, str(inner_e))
                         await asyncio.sleep(0.5)
-                        await self.resolve_and_cache_peer(chat_id)
+                        await self.resolve_and_cache_peer(
+                            chat_id, chat_username=chat_username, chat_title=chat_title, chat_type=chat_type
+                        )
                         try:
                             await _do_stream()
-                            logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully on retry!")
+                            logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully on retry for chat %s!", chat_id)
                         except Exception as retry_err:
                             retry_err_str = str(retry_err).lower()
+                            if "channel_invalid" in retry_err_str:
+                                await self._log_channel_invalid_diagnostics(chat_id, retry_err, chat_title, chat_type)
+
                             if any(k in retry_err_str for k in ("groupcall_invalid", "groupcall_forbidden", "no_active_group_call", "voice_chat_not_started", "call is not active")):
                                 raise RuntimeError("Voice Chat is not currently active in this group. Please start the Voice Chat first, then send /play again.")
                             elif any(k in retry_err_str for k in ("user_not_participant", "channel_private")):
@@ -684,10 +828,12 @@ class VoiceChatAssistant:
                         raise inner_e
 
                 self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
+                self.chat_errors[chat_id] = None
                 self.last_error = None
                 return True
             except Exception as e:
                 err_text = str(e)
+                self.chat_errors[chat_id] = err_text
                 self.last_error = err_text
                 logger.error(
                     "Voice Chat: PyTgCalls error playing audio in chat %s: %s",
@@ -698,6 +844,7 @@ class VoiceChatAssistant:
 
         logger.debug("Voice Chat: Playing track in chat %s (UI mode active)", chat_id)
         self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
+        self.chat_errors[chat_id] = None
         self.last_error = None
         return True
 

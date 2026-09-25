@@ -212,7 +212,8 @@ class PlayerManager:
                 if not stream_ok:
                     state.stop()
                     await self._update_playback_ui(chat_id)
-                    logger.info("Chat %s: Streaming failed for '%s' (last_error='%s')", chat_id, track.title, voice_assistant.last_error)
+                    err_msg = voice_assistant.get_last_error(chat_id)
+                    logger.info("Chat %s: Streaming failed for '%s' (last_error='%s')", chat_id, track.title, err_msg)
                     return False, state, queue
                 
                 # 4. Success! Mark status as playing and start timeline task
@@ -457,12 +458,13 @@ class PlayerManager:
                     self._start_timeline_task(chat_id)
                     return next_track, f"Skipped to: {next_track.title}"
                 else:
-                    logger.warning("[PLAYER] Track failed playback: '%s' (%s). trying next.", next_track.title, voice_assistant.last_error)
+                    err_msg = voice_assistant.get_last_error(chat_id)
+                    logger.warning("[PLAYER] Track failed playback in chat %s: '%s' (%s). trying next.", chat_id, next_track.title, err_msg)
                     try:
                         from bot.api import bot_api_client
                         from utils.formatting import to_small_caps
                         await bot_api_client.send_message(
-                            chat_id, f"⚠️ " + to_small_caps(f"playback failed for '{next_track.title}': {voice_assistant.last_error or 'Stream error'}. skipping...")
+                            chat_id, f"⚠️ " + to_small_caps(f"playback failed for '{next_track.title}': {err_msg or 'Stream error'}. skipping...")
                         )
                     except Exception:
                         pass
@@ -599,7 +601,8 @@ class PlayerManager:
             else:
                 state.stop()
                 await self._update_playback_ui(chat_id)
-                return False, f"Failed to seek to {seconds} seconds: {voice_assistant.last_error or 'Stream error'}"
+                err_msg = voice_assistant.get_last_error(chat_id)
+                return False, f"Failed to seek to {seconds} seconds: {err_msg or 'Stream error'}"
 
     async def set_volume(self, chat_id: int, volume: int) -> Tuple[bool, str]:
         lock = await self._get_lock(chat_id)
