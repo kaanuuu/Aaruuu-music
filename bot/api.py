@@ -317,6 +317,102 @@ class TelegramAPIClient:
         """Deletes a message from chat."""
         return await self.bot_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
+    async def send_audio(
+        self,
+        chat_id: int,
+        audio_path_or_url: str,
+        caption: Optional[str] = None,
+        title: Optional[str] = None,
+        performer: Optional[str] = None,
+        duration: Optional[int] = None,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Sends an MP3/audio file directly into Telegram chat via multipart upload or URL."""
+        session = await self.get_session()
+        url = f"{self._base_url}/sendAudio"
+
+        if os.path.exists(audio_path_or_url) and os.path.isfile(audio_path_or_url):
+            data = aiohttp.FormData()
+            data.add_field("chat_id", str(chat_id))
+            if caption:
+                data.add_field("caption", caption[:1024])
+                data.add_field("parse_mode", "HTML")
+            if title:
+                data.add_field("title", title[:64])
+            if performer:
+                data.add_field("performer", performer[:64])
+            if duration:
+                data.add_field("duration", str(int(duration)))
+            if reply_to_message_id:
+                data.add_field("reply_to_message_id", str(reply_to_message_id))
+
+            fname = os.path.basename(audio_path_or_url)
+            data.add_field("audio", open(audio_path_or_url, "rb"), filename=fname, content_type="audio/mpeg")
+
+            try:
+                async with session.post(url, data=data) as resp:
+                    return await resp.json()
+            except Exception as e:
+                logger.error("send_audio multipart error: %s", str(e))
+                return {"ok": False, "description": str(e)}
+
+        payload: Dict[str, Any] = {"chat_id": chat_id, "audio": audio_path_or_url}
+        if caption:
+            payload["caption"] = caption[:1024]
+            payload["parse_mode"] = "HTML"
+        if title:
+            payload["title"] = title[:64]
+        if performer:
+            payload["performer"] = performer[:64]
+        if duration:
+            payload["duration"] = int(duration)
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+        return await self.bot_api("sendAudio", payload)
+
+    async def send_video(
+        self,
+        chat_id: int,
+        video_path_or_url: str,
+        caption: Optional[str] = None,
+        duration: Optional[int] = None,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Sends an MP4 video file directly into Telegram chat via multipart upload or URL."""
+        session = await self.get_session()
+        url = f"{self._base_url}/sendVideo"
+
+        if os.path.exists(video_path_or_url) and os.path.isfile(video_path_or_url):
+            data = aiohttp.FormData()
+            data.add_field("chat_id", str(chat_id))
+            if caption:
+                data.add_field("caption", caption[:1024])
+                data.add_field("parse_mode", "HTML")
+            if duration:
+                data.add_field("duration", str(int(duration)))
+            if reply_to_message_id:
+                data.add_field("reply_to_message_id", str(reply_to_message_id))
+
+            fname = os.path.basename(video_path_or_url)
+            data.add_field("video", open(video_path_or_url, "rb"), filename=fname, content_type="video/mp4")
+
+            try:
+                async with session.post(url, data=data) as resp:
+                    return await resp.json()
+            except Exception as e:
+                logger.error("send_video multipart error: %s", str(e))
+                return {"ok": False, "description": str(e)}
+
+        payload: Dict[str, Any] = {"chat_id": chat_id, "video": video_path_or_url}
+        if caption:
+            payload["caption"] = caption[:1024]
+            payload["parse_mode"] = "HTML"
+        if duration:
+            payload["duration"] = int(duration)
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+        return await self.bot_api("sendVideo", payload)
+
     # Internal fallbacks if telegram client/version requires photo/text envelope while preserving Rich UI Button Blocks
     async def _fallback_send(
         self, chat_id: int, rich_message: Dict[str, Any], reply_to_message_id: Optional[int] = None

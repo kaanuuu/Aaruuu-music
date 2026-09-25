@@ -164,22 +164,22 @@ class MediaExtractor:
         """Removes YouTube descriptors, channel noise, and symbols to produce clean search terms."""
         if not text:
             return ""
-        # Remove video descriptors
+        # Remove video descriptors & extra text
         cleaned = re.sub(
-            r"(?i)\b(official\s+music\s+video|official\s+video|official\s+audio|lyric\s+video|lyrics\s+video|lyrics|full\s+song|4k|hd|video|audio|her\s+side\s+of\s+the\s+story|spider-man\s+\(brand\s+new\s+day\s+edition\)|brand\s+new\s+day\s+edition)\b",
+            r"(?i)\b(official\s+music\s+video|official\s+video|official\s+audio|lyric\s+video|lyrics\s+video|lyrics|full\s+song|4k|hd|video|audio|her\s+side\s+of\s+the\s+story|spider-man\s+brand\s+new\s+day\s+edition|brand\s+new\s+day\s+edition|teaser|trailer|whatsapp\s+status|status)\b",
             "",
             text,
         )
-        # Remove channel noise
+        # Remove channel noise & record label names
         cleaned = re.sub(
-            r"(?i)\b(and\s+)?(sony\s+music\s+\w+|tips\s+official|t-series|zee\s+music\s+company|7alfaaz|ytinitialdata)\b",
+            r"(?i)\b(and\s+)?(sony\s+music\s*\w*|tips\s+official|t-series|zee\s+music\s+company|7alfaaz|ytinitialdata|records|music|vevo|official)\b",
             "",
             cleaned,
         )
         # Remove symbols
         cleaned = re.sub(r"[|\\/()\[\]{}\-–—_:;]", " ", cleaned)
-        words = cleaned.split()
-        return " ".join(words[:6])
+        words = [w for w in cleaned.split() if len(w) >= 2]
+        return " ".join(words[:4])
 
     def _get_from_cache(self, key: str) -> Optional[Any]:
         if key in self._cache:
@@ -1212,8 +1212,9 @@ class MediaExtractor:
 
             # Priority 5: Fallback search & download via SoundCloud or JioSaavn if YouTube/direct download failed
             if not success and not is_video:
-                clean_q = self._clean_search_query(track.title) or track.title
-                fallback_query = clean_q
+                clean_title = self._clean_search_query(track.title)
+                clean_artist = self._clean_search_query(track.artist) if track.artist and track.artist != "YouTube Music" else ""
+                fallback_query = f"{clean_title} {clean_artist}".strip() or track.title
                 logger.info("[MEDIA] Primary download failed for '%s'. Initiating multi-provider fallback for query: '%s'", track.title, fallback_query)
 
                 # Attempt SoundCloud fallback via yt-dlp

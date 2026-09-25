@@ -76,6 +76,10 @@ async def process_update(update: Dict[str, Any]) -> None:
                 await cmd.handle_play(message, args)
             elif clean_cmd == "vplay":
                 await cmd.handle_vplay(message, args)
+            elif clean_cmd in ("download", "down", "downloadsong", "getaudio"):
+                await cmd.handle_download(message, args, is_video=False)
+            elif clean_cmd in ("video", "downloadvideo", "getvideo"):
+                await cmd.handle_download(message, args, is_video=True)
             elif clean_cmd in ("search", "song"):
                 await cmd.handle_search(message, args)
             elif clean_cmd == "pause":

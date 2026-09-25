@@ -9,7 +9,7 @@ import re
 import uuid
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from player.models import Track
 from player.providers.base import BaseProvider
 from utils.cookie_manager import get_youtube_cookie_file, log_cookie_status_at_startup
