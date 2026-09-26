@@ -197,19 +197,127 @@ class MediaExtractor:
         self._cache[key] = (time.time(), val)
 
     def extract_related_track(self, current_track: Track) -> Optional[Track]:
-        """Fetches a related audio track for autoplay mode when queue ends."""
+        """Fetches a related audio track of the exact same tone and theme for autoplay mode when queue ends."""
         if not current_track:
             return None
-        query = f"{current_track.artist} best songs" if (current_track.artist and current_track.artist != "YouTube Music") else f"{current_track.title} song"
-        try:
-            tracks = self._search_youtube_ytinitialdata(query, limit=5, requester_id=0, requester_name="Autoplay 📻")
+
+        # Extract clean YouTube Video ID from current track
+        video_id = None
+        t_id = getattr(current_track, "track_id", "")
+        if t_id.startswith("yt_"):
+            video_id = t_id.replace("yt_", "")
+        elif t_id.startswith("ytv_"):
+            video_id = t_id.replace("ytv_", "")
+        elif "youtube.com/watch?v=" in getattr(current_track, "source_url", ""):
+            match = re.search(r"v=([a-zA-Z0-9_-]{11})", current_track.source_url)
+            if match:
+                video_id = match.group(1)
+
+        tracks = []
+        if video_id:
+            logger.info("[AUTOPLAY] Scraping YouTube sidebar recommendations for song: %s (id=%s)", current_track.title, video_id)
+            try:
+                url = f"https://www.youtube.com/watch?v={video_id}"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    html = resp.read().decode("utf-8", errors="ignore")
+                    match_data = re.search(r'var ytInitialData = ({.*?});</script>', html) or re.search(r'window\[\"ytInitialData\"\] = ({.*?});', html)
+                    if match_data:
+                        data = json.loads(match_data.group(1))
+                        # Find all compactVideoRenderer in JSON tree
+                        renderers = []
+                        def find_compact(d):
+                            if isinstance(d, dict):
+                                if "compactVideoRenderer" in d:
+                                    renderers.append(d["compactVideoRenderer"])
+                                for val in d.values():
+                                    find_compact(val)
+                            elif isinstance(d, list):
+                                for item in d:
+                                    find_compact(item)
+                        
+                        find_compact(data)
+                        
+                        for r in renderers:
+                            vid = r.get("videoId")
+                            if not vid:
+                                continue
+                            
+                            title_data = r.get("title", {})
+                            title = title_data.get("simpleText") or ""
+                            if not title and "runs" in title_data and title_data["runs"]:
+                                title = title_data["runs"][0].get("text", "")
+                            
+                            if not title:
+                                continue
+                            
+                            byline = r.get("longBylineText") or r.get("shortBylineText") or {}
+                            channel = "YouTube Music"
+                            if "runs" in byline and byline["runs"]:
+                                channel = byline["runs"][0].get("text", "")
+                            
+                            dur_str = r.get("lengthText", {}).get("simpleText", "")
+                            duration = 210
+                            if dur_str and ":" in dur_str:
+                                parts = dur_str.split(":")
+                                try:
+                                    if len(parts) == 2:
+                                        duration = int(parts[0]) * 60 + int(parts[1])
+                                    elif len(parts) == 3:
+                                        duration = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                                except ValueError:
+                                    pass
+                            
+                            # Filter results for high-fidelity music tone
+                            # Skip shorts/snippets/teasers and very long items
+                            if duration < 60 or duration > 600:
+                                continue
+                            
+                            t_lower = title.lower()
+                            if any(w in t_lower for w in ("full album", "playlist", "compilation", "medley", "mashup")):
+                                continue
+                            
+                            if t_lower == current_track.title.lower().strip():
+                                continue
+                                
+                            tracks.append(
+                                Track(
+                                    track_id=f"yt_{vid}",
+                                    title=title,
+                                    artist=channel,
+                                    duration=duration,
+                                    thumbnail=f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                                    source_url=f"https://www.youtube.com/watch?v={vid}",
+                                    stream_url=None,
+                                    requester_user_id=0,
+                                    requester_name="Autoplay 📻",
+                                )
+                            )
+            except Exception as e:
+                logger.debug("Autoplay watch page sidebar scraping note: %s", str(e))
+
+        # Fallback to search query if watch page scraping fails or returned empty
+        if not tracks:
+            clean_title = self._clean_search_query(current_track.title) or current_track.title
+            clean_artist = self._clean_search_query(current_track.artist) if current_track.artist and current_track.artist != "YouTube Music" else ""
+            query = f"{clean_title} {clean_artist} similar songs"
+            logger.info("[AUTOPLAY] Sidebar recommendation empty. Falling back to search matching: %s", query)
+            try:
+                tracks = self._search_youtube_ytinitialdata(query, limit=5, requester_id=0, requester_name="Autoplay 📻")
+            except Exception as e:
+                logger.debug("Autoplay fallback search error: %s", str(e))
+
+        if tracks:
+            # Return the first track that does not match current track's title
             for tr in tracks:
                 if tr.title.lower().strip() != current_track.title.lower().strip():
                     return tr
-            if tracks:
-                return tracks[0]
-        except Exception as e:
-            logger.debug("Autoplay related track search note: %s", str(e))
+            return tracks[0]
+
         return None
 
 

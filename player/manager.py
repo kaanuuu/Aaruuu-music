@@ -177,6 +177,9 @@ class PlayerManager:
                 state.is_paused = False
                 state.new_session()
                 
+                # Reset autoplay counter on manual play
+                state.autoplay_counter = 0
+                
                 # Reset any old skip votes for the new track
                 if hasattr(state, "skip_votes"):
                     state.skip_votes.clear()
@@ -329,6 +332,9 @@ class PlayerManager:
                 state.is_paused = False
                 state.new_session()
                 
+                # Reset autoplay counter on manual play
+                state.autoplay_counter = 0
+                
                 # 1. Preparing audio status
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
@@ -444,6 +450,9 @@ class PlayerManager:
                 }
                 state.is_paused = False
                 state.new_session()
+                
+                # Reset autoplay counter on manual play
+                state.autoplay_counter = 0
 
                 state.playback_status = "preparing"
                 await self._update_playback_ui(chat_id)
@@ -495,48 +504,68 @@ class PlayerManager:
 
             # Queue empty -> Check Autoplay
             if state.autoplay and old_track:
-                loop = asyncio.get_running_loop()
-                auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track)
-                if auto_track:
-                    RECOMMENDATION_CACHE[chat_id] = auto_track
-                    logger.info("[AUTOPLAY] Generated recommendation '%s' for chat %s", auto_track.title, chat_id)
+                if state.autoplay_counter >= 5:
+                    logger.info("[AUTOPLAY] Autoplay limit (5 tracks) reached for chat %s. Stopping automatic playback.", chat_id)
                     try:
                         from bot.api import bot_api_client
                         from utils.typography import to_bold_sans
-                        rec_text = (
-                            f"🎵 {to_bold_sans('MUSIC FINISHED')}\n\n"
-                            f"Finished playing: <b>{old_track.title}</b>\n\n"
-                            f"💡 {to_bold_sans('RECOMMENDED NEXT')}:\n"
-                            f"<b>{auto_track.title}</b> — {auto_track.artist}"
+                        await bot_api_client.send_message(
+                            chat_id, f"⏹️ {to_bold_sans('AUTOPLAY')}: Automatically stopped after 5 consecutive songs to save bandwidth. Play a new song manually to reset!"
                         )
-                        rec_rich = {
-                            "type": "rich_message",
-                            "blocks": [
-                                {
-                                    "type": "heading",
-                                    "text": to_bold_sans("MUSIC FINISHED"),
-                                    "size": 1,
-                                },
-                                {
-                                    "type": "paragraph",
-                                    "text": rec_text,
-                                },
-                                {
-                                    "type": "buttons",
-                                    "buttons": [
-                                        {
-                                            "text": "▶ Play Recommendation",
-                                            "style": "success",
-                                            "callback_data": f"play_rec:{auto_track.track_id}",
-                                        }
-                                    ],
-                                    "align": "center",
-                                },
-                            ],
+                    except Exception:
+                        pass
+                else:
+                    loop = asyncio.get_running_loop()
+                    auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track)
+                    if auto_track:
+                        state.autoplay_counter += 1
+                        logger.info("[AUTOPLAY] Automatically playing next recommendation '%s' for chat %s (Count: %d/5)", auto_track.title, chat_id, state.autoplay_counter)
+                        
+                        # Prepare autoplay track session
+                        state.current_track = auto_track
+                        state.requested_by = {
+                            "id": 0,
+                            "name": "Autoplay 📻",
+                            "username": None,
+                            "mention": "Autoplay 📻",
                         }
-                        await bot_api_client.send_rich_message(chat_id, rec_rich)
-                    except Exception as e:
-                        logger.warning("Failed to send recommendation rich message: %s", str(e))
+                        state.is_paused = False
+                        state.new_session()
+
+                        state.playback_status = "preparing"
+                        await self._update_playback_ui(chat_id)
+                        
+                        await self._download_track(auto_track)
+                        auto_source = auto_track.playable_source
+                        
+                        if auto_source and isinstance(auto_source, str):
+                            state.playback_status = "starting"
+                            await self._update_playback_ui(chat_id)
+                            
+                            stream_ok = await voice_assistant.play_audio(
+                                chat_id, auto_source, is_video=getattr(auto_track, "is_video", False)
+                            )
+                            if stream_ok:
+                                state.is_playing = True
+                                state.playback_status = "playing"
+                                state.started_at = time.time()
+                                state.paused_at = None
+                                state.pause_duration_offset = 0.0
+                                
+                                await self._send_new_player_message(chat_id)
+                                self._start_timeline_task(chat_id)
+                                
+                                # Notify the chat group that we automatically started the next similar song!
+                                try:
+                                    from bot.api import bot_api_client
+                                    from utils.typography import to_bold_sans
+                                    await bot_api_client.send_message(
+                                        chat_id, f"📻 {to_bold_sans('AUTOPLAY')}: Now playing next similar song ({state.autoplay_counter}/5):\n<b>{auto_track.title}</b> — <i>{auto_track.artist}</i>"
+                                    )
+                                except Exception:
+                                    pass
+                                
+                                return auto_track, f"Autoplayed next song: {auto_track.title}"
 
             # Delete old player message if any so chat is left completely clean
             if state.player_message_id:

@@ -158,6 +158,7 @@ class PlayerState:
         self.requested_by: Dict[str, Any] = {}
         self.loop_mode: str = "off"  # "off", "track", "queue"
         self.autoplay: bool = True  # Autoplay enabled by default when queue ends
+        self.autoplay_counter: int = 0  # Counter for sequential autoplay recommendations
         self.volume: int = 100
         self.playback_status: str = "stopped"
 

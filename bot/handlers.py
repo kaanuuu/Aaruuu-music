@@ -129,17 +129,8 @@ async def process_update(update: Dict[str, Any]) -> None:
             elif clean_cmd in ("vctest", "testvc", "diagnostic"):
                 await cmd.handle_vctest(message)
             else:
-                from bot.api import bot_api_client
-                from utils.typography import to_bold_sans
-                reply_to = message.get("message_id")
-                await bot_api_client.send_message(
-                    chat_id,
-                    f"ℹ️ {to_bold_sans('COMMAND UNAVAILABLE')}\n\n"
-                    f"The command <code>/{clean_cmd}</code> is currently unavailable or not recognized.\n"
-                    f"💡 Type <code>/help</code> or browse the menu to see available commands.",
-                    parse_mode="HTML",
-                    reply_to_message_id=reply_to,
-                )
+                # Silently ignore unregistered/external bot commands to avoid spamming the group chat
+                return
 
     except Exception as e:
         logger.error("Error processing update %s: %s", update.get("update_id"), str(e), exc_info=True)
