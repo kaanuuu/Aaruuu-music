@@ -196,19 +196,53 @@ class MediaExtractor:
             self._cache.clear()
         self._cache[key] = (time.time(), val)
 
-    def extract_related_track(self, current_track: Track) -> Optional[Track]:
+    def extract_related_track(self, current_track: Track, excluded_tracks: List[Track] = None) -> Optional[Track]:
         """Fetches a related audio track of the exact same tone and theme for autoplay mode when queue ends."""
         if not current_track:
             return None
 
-        # Extract clean YouTube Video ID from current track
-        video_id = None
+        def clean_title_for_comparison(title: str) -> str:
+            if not title:
+                return ""
+            t = title.lower()
+            for word in [
+                "official video", "official audio", "full video", "lyric video", "lyrics video",
+                "official", "music", "video", "lyric", "lyrics", "audio", "hd", "4k", "cover", 
+                "remix", "lirical", "visualizer", "prod.", "feat.", "ft.", "original", "song", "mp3"
+            ]:
+                t = t.replace(word, "")
+            import re
+            t = re.sub(r"[^a-z0-9]", "", t)
+            return t.strip()
+
+        # Build set of excluded video IDs and cleaned titles to prevent duplicate playback
+        ex_vids = set()
+        ex_cleaned_titles = set()
+
+        # Add current track to exclusions
+        curr_vid = None
         t_id = getattr(current_track, "track_id", "")
         if t_id.startswith("yt_"):
-            video_id = t_id.replace("yt_", "")
+            curr_vid = t_id.replace("yt_", "")
         elif t_id.startswith("ytv_"):
-            video_id = t_id.replace("ytv_", "")
-        elif "youtube.com/watch?v=" in getattr(current_track, "source_url", ""):
+            curr_vid = t_id.replace("ytv_", "")
+        
+        if curr_vid:
+            ex_vids.add(curr_vid)
+        ex_cleaned_titles.add(clean_title_for_comparison(current_track.title))
+
+        if excluded_tracks:
+            for et in excluded_tracks:
+                ex_cleaned_titles.add(clean_title_for_comparison(et.title))
+                eid = getattr(et, "track_id", "")
+                if eid.startswith("yt_"):
+                    ex_vids.add(eid.replace("yt_", ""))
+                elif eid.startswith("ytv_"):
+                    ex_vids.add(eid.replace("ytv_", ""))
+
+        # Extract clean YouTube Video ID from current track
+        video_id = curr_vid
+        if not video_id and "youtube.com/watch?v=" in getattr(current_track, "source_url", ""):
             match = re.search(r"v=([a-zA-Z0-9_-]{11})", current_track.source_url)
             if match:
                 video_id = match.group(1)
@@ -281,7 +315,9 @@ class MediaExtractor:
                             if any(w in t_lower for w in ("full album", "playlist", "compilation", "medley", "mashup")):
                                 continue
                             
-                            if t_lower == current_track.title.lower().strip():
+                            # Check if duplicate by ID or cleaned title
+                            cleaned_candidate = clean_title_for_comparison(title)
+                            if vid in ex_vids or cleaned_candidate in ex_cleaned_titles:
                                 continue
                                 
                             tracks.append(
@@ -307,15 +343,16 @@ class MediaExtractor:
             query = f"{clean_title} {clean_artist} similar songs"
             logger.info("[AUTOPLAY] Sidebar recommendation empty. Falling back to search matching: %s", query)
             try:
-                tracks = self._search_youtube_ytinitialdata(query, limit=5, requester_id=0, requester_name="Autoplay 📻")
+                raw_search = self._search_youtube_ytinitialdata(query, limit=10, requester_id=0, requester_name="Autoplay 📻")
+                for tr in raw_search:
+                    svid = tr.track_id.replace("yt_", "").replace("ytv_", "")
+                    sclean = clean_title_for_comparison(tr.title)
+                    if svid not in ex_vids and sclean not in ex_cleaned_titles:
+                        tracks.append(tr)
             except Exception as e:
                 logger.debug("Autoplay fallback search error: %s", str(e))
 
         if tracks:
-            # Return the first track that does not match current track's title
-            for tr in tracks:
-                if tr.title.lower().strip() != current_track.title.lower().strip():
-                    return tr
             return tracks[0]
 
         return None

@@ -516,7 +516,7 @@ class PlayerManager:
                         pass
                 else:
                     loop = asyncio.get_running_loop()
-                    auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track)
+                    auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track, list(state.history))
                     if auto_track:
                         state.autoplay_counter += 1
                         logger.info("[AUTOPLAY] Automatically playing next recommendation '%s' for chat %s (Count: %d/5)", auto_track.title, chat_id, state.autoplay_counter)
