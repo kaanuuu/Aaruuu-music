@@ -5,7 +5,7 @@ Renders aesthetic documentation and interactive guides using Unicode typography
 Hides owner-only commands from non-owners and provides 1-tap support redirection to @wzzkaanu.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from utils.typography import to_bold_sans, to_small_caps
 from database.db import Database
 
@@ -13,7 +13,7 @@ db = Database()
 SUPPORT_URL = "https://t.me/wzzkaanu"
 
 
-def build_start_rich_message(guide_section: str = "home", is_owner: bool = False) -> Dict[str, Any]:
+def build_start_rich_message(guide_section: str = "home", is_owner: bool = False, chat_id: Optional[int] = None) -> Dict[str, Any]:
     """
     Renders the /start and /help interactive guide with clean typography.
     Owner-only sections and buttons are hidden if is_owner is False.
@@ -166,19 +166,25 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             "type": "heading",
             "text": to_bold_sans("AARUU MUSIC GUIDE"),
             "size": 1,
+            "font": "OptimusPrinceps.ttf",
         },
-        {
+    ]
+
+    # Banners should only be shown in DMs, never in group chats (chat_id < 0)
+    if chat_id is None or chat_id >= 0:
+        blocks.append({
             "type": "photo",
             "photo": {
                 "type": "photo",
                 "media": db.get_cached_banner(active_section),
             },
-        },
-        {
-            "type": "paragraph",
-            "text": text,
-        },
-    ]
+        })
+
+    blocks.append({
+        "type": "paragraph",
+        "text": text,
+        "font": "SplineSans-Light.otf",
+    })
 
     for row in button_rows:
         blocks.append({

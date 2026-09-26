@@ -103,30 +103,21 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
     track_title = track.title or "Unknown Track"
     track_artist = track.artist or "Unknown Artist"
 
-    if is_video_track:
-        heading_title = to_bold_sans("NOW PLAYING VIDEO")
-        caption_text = (
-            f"🎬 {to_small_caps('video')}: {track_title}\n"
-            f"👤 {to_small_caps('channel')}: {track_artist}\n"
-            f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
-            f"⚡ {to_small_caps('status')}: {status_badge} (🎥 {to_small_caps('video stream')})\n\n"
-            f"{time_str}"
-        )
-    else:
-        heading_title = to_bold_sans("NOW PLAYING")
-        caption_text = (
-            f"🎵 {to_small_caps('title')}: {track_title}\n"
-            f"👤 {to_small_caps('artist')}: {track_artist}\n"
-            f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
-            f"⚡ {to_small_caps('status')}: {status_badge}\n\n"
-            f"{time_str}"
-        )
+    icon = "🎬" if is_video_track else "🎵"
+    heading_title = f"{icon} {track_title}"
+    caption_text = (
+        f"👤 {to_small_caps('artist') if not is_video_track else to_small_caps('channel')}: {track_artist}\n"
+        f"🙋 {to_small_caps('requested by')}: {requester_label}\n"
+        f"⚡ {to_small_caps('status')}: {status_badge}" + (f" (🎥 {to_small_caps('video stream')})" if is_video_track else "") + f"\n\n"
+        f"{time_str}"
+    )
 
     blocks: List[Dict[str, Any]] = [
         {
             "type": "heading",
             "text": heading_title,
             "size": 1,
+            "font": "OptimusPrinceps.ttf",
         },
     ]
 
@@ -144,6 +135,7 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
         {
             "type": "paragraph",
             "text": caption_text,
+            "font": "SplineSans-Light.otf",
         },
         {
             "type": "buttons",
@@ -253,6 +245,7 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue, is_closed: b
             "type": "heading",
             "text": to_bold_sans("MUSIC QUEUE"),
             "size": 1,
+            "font": "OptimusPrinceps.ttf",
         },
     ]
 
@@ -269,6 +262,7 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue, is_closed: b
         {
             "type": "paragraph",
             "text": queue_body,
+            "font": "SplineSans-Light.otf",
         },
         {
             "type": "buttons",
@@ -342,6 +336,7 @@ def build_search_rich_ui(
             "type": "heading",
             "text": to_bold_sans("MUSIC SEARCH RESULTS"),
             "size": 1,
+            "font": "OptimusPrinceps.ttf",
         },
     ]
 
@@ -358,6 +353,7 @@ def build_search_rich_ui(
     blocks.append({
         "type": "paragraph",
         "text": "\n".join(text_lines),
+        "font": "SplineSans-Light.otf",
     })
 
     # Individual result selection button blocks (1 per line for readability)
@@ -430,10 +426,12 @@ def build_cancel_rich_ui(
                 "type": "heading",
                 "text": to_bold_sans(title),
                 "size": 1,
+                "font": "OptimusPrinceps.ttf",
             },
             {
                 "type": "paragraph",
                 "text": status_text,
+                "font": "SplineSans-Light.otf",
             },
             {
                 "type": "buttons",

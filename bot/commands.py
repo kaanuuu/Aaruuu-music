@@ -1263,11 +1263,14 @@ async def handle_restart(message: Dict[str, Any]) -> None:
 
 
 async def handle_ac(message: Dict[str, Any]) -> None:
-    """Informs owner about registered groups and current active playback streams (Owner only)."""
+    """Informs owner about registered groups and current active playback streams (Owner only, DM only)."""
     chat_id = message["chat"]["id"]
     from_id = message.get("from", {}).get("id", 0)
     if not is_sudo(from_id):
         await bot_api_client.send_message(chat_id, "⛔ " + to_small_caps("only bot owner can use this command."))
+        return
+    if chat_id < 0:
+        await bot_api_client.send_message(chat_id, "⚠️ " + to_small_caps("this command is only allowed in private message (dm) of the bot."))
         return
     stats = await db.get_stats()
     active_streams = sum(1 for state in player_manager._states.values() if state.is_playing)

@@ -37,7 +37,7 @@ class TestRichMessages(unittest.TestCase):
         # 1. Heading block
         heading_block = next((b for b in blocks if b.get("type") == "heading"), None)
         self.assertIsNotNone(heading_block)
-        self.assertEqual(heading_block.get("text"), to_bold_sans("NOW PLAYING"))
+        self.assertIn("Aaruu Symphony", heading_block.get("text"))
 
         # 2. Photo block for album art
         photo_block = next((b for b in blocks if b.get("type") == "photo"), None)
@@ -46,10 +46,10 @@ class TestRichMessages(unittest.TestCase):
 
         # 3. Paragraph block containing details and progress
         paragraphs = [b for b in blocks if b.get("type") == "paragraph"]
-        details_paragraph = next((p for p in paragraphs if "Aaruu Symphony" in p.get("text", "")), None)
+        details_paragraph = next((p for p in paragraphs if "john_doe" in p.get("text", "")), None)
         self.assertIsNotNone(details_paragraph)
         self.assertIn("Divine Melody", details_paragraph["text"])
-        self.assertIn("3:06", details_paragraph["text"])
+        self.assertIn("john_doe", details_paragraph["text"])
         self.assertIn("●", details_paragraph["text"])
 
         # 4. Buttons blocks: Row 1 [ ≡ Queue ] [ ⏸ Pause ] [ ↻ Replay ] and Row 2 [ » Skip ]

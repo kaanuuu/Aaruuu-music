@@ -646,6 +646,12 @@ class VoiceChatAssistant:
                     else:
                         params = f"-ss {seek_seconds}" if seek_seconds > 0.0 else ""
                     
+                    if not is_video:
+                        if params:
+                            params += " -vn"
+                        else:
+                            params = "-vn"
+                    
                     if MediaStream:
                         try:
                             from pytgcalls.types import AudioQuality

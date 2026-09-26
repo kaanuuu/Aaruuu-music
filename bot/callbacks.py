@@ -130,7 +130,7 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
         section = data.split(":", 1)[1]
         if section == "close":
             await bot_api_client.answer_callback_query(cq_id, "Guide closed.")
-            rich_help = build_start_rich_message("close", is_owner=is_sudo(user_id))
+            rich_help = build_start_rich_message("close", is_owner=is_sudo(user_id), chat_id=chat_id)
             await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_help)
             return
 
@@ -142,7 +142,7 @@ async def handle_callback_query(update: Dict[str, Any]) -> None:
             return
 
         await bot_api_client.answer_callback_query(cq_id)
-        rich_help = build_start_rich_message(section, is_owner=user_is_owner)
+        rich_help = build_start_rich_message(section, is_owner=user_is_owner, chat_id=chat_id)
         await bot_api_client.edit_message_rich_text(chat_id, message_id, rich_help)
         return
 
