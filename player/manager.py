@@ -690,6 +690,84 @@ class PlayerManager:
             await voice_assistant.stop_audio(chat_id)
             await voice_assistant.leave_chat(chat_id)
             logger.info("[PLAYER] Queue is empty. Assistant left VC for chat %s", chat_id)
+
+            # Send beautiful Queue Finished & Recommendation panel to the group
+            try:
+                from bot.api import bot_api_client
+                from utils.typography import to_bold_sans, to_small_caps
+                
+                finish_text = (
+                    f"🎵 {to_bold_sans('PLAYBACK FINISHED')}\n\n"
+                    f"The queue has ended and the assistant has left the voice chat. Thank you for listening! 🎧\n\n"
+                )
+                
+                finish_rich = {
+                    "type": "rich_message",
+                    "blocks": [
+                        {
+                            "type": "heading",
+                            "text": to_bold_sans("PLAYBACK FINISHED"),
+                            "size": 1,
+                        },
+                    ]
+                }
+                
+                buttons = []
+                
+                # Fetch a smart recommendation to show as an instant play button!
+                if old_track:
+                    loop = asyncio.get_running_loop()
+                    auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track, list(state.history))
+                    if auto_track:
+                        RECOMMENDATION_CACHE[chat_id] = auto_track
+                        # Limit title length for the button
+                        btn_title = auto_track.title[:25] + "..." if len(auto_track.title) > 25 else auto_track.title
+                        
+                        finish_text += (
+                            f"💡 {to_bold_sans('RECOMMENDED NEXT')}:\n"
+                            f"📀 <b>{auto_track.title}</b> — {auto_track.artist}\n"
+                            f"⏱️ {to_small_caps('duration')}: {auto_track.duration // 60}:{auto_track.duration % 60:02d}\n\n"
+                            f"Tap the green button below to play this recommended song instantly!"
+                        )
+                        
+                        # Add thumbnail to the finish rich block if available
+                        if isinstance(auto_track.thumbnail, str) and auto_track.thumbnail.startswith(("http://", "https://")):
+                            finish_rich["blocks"].append({
+                                "type": "photo",
+                                "photo": {
+                                    "type": "photo",
+                                    "media": auto_track.thumbnail,
+                                },
+                            })
+                            
+                        buttons.append({
+                            "text": f"▶️ Play: {btn_title}",
+                            "style": "success",
+                            "callback_data": f"play_rec:{auto_track.track_id}",
+                        })
+                
+                finish_rich["blocks"].append({
+                    "type": "paragraph",
+                    "text": finish_text,
+                })
+                
+                # Search button to explore new tracks easily
+                buttons.append({
+                    "text": "🔎 Search Music",
+                    "style": "primary",
+                    "callback_data": "help:commands",
+                })
+                
+                finish_rich["blocks"].append({
+                    "type": "buttons",
+                    "buttons": buttons,
+                    "align": "center",
+                })
+                
+                await bot_api_client.send_rich_message(chat_id, finish_rich)
+            except Exception as fe:
+                logger.warning("Failed to send queue finished notification message: %s", str(fe))
+
             return None, "Queue is empty. Playback ended."
 
     async def toggle_loop_mode(

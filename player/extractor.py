@@ -1274,7 +1274,11 @@ class MediaExtractor:
                     url = entry.get("webpage_url") or entry.get("permalink_url")
                     if url and "api.soundcloud.com" not in url and "soundcloud.com/" in url:
                         logger.info("[MEDIA] Downloading SoundCloud fallback clean URL: %s", url)
-                        ydl.download([url])
+                        try:
+                            ydl.download([url])
+                        except Exception as dl_err:
+                            logger.info("[MEDIA] Native SoundCloud download failed, trying Cobalt: %s", str(dl_err))
+                        
                         parent_dir = os.path.dirname(dest_path)
                         prefix = os.path.splitext(os.path.basename(dest_path))[0]
                         if os.path.exists(parent_dir):
@@ -1283,6 +1287,11 @@ class MediaExtractor:
                                     fpath = os.path.join(parent_dir, fname)
                                     if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
                                         return True
+                        
+                        # Fallback to Cobalt for SoundCloud URLs
+                        cobalt_sc_success = self._download_url_via_cobalt(url, dest_path, False)
+                        if cobalt_sc_success and os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+                            return True
             return False
         except Exception as e:
             logger.warning("[YTDLP_ERROR] SoundCloud fallback failed for %s: %s", video_id, str(e))
@@ -1458,7 +1467,21 @@ class MediaExtractor:
         logger.info("cache_hit=no")
         logger.info("attempt=1")
 
-        # 1. Download local file using highly resilient native emulated yt-dlp downloader
+        # 1. Premium Cobalt Web Downloader (Primary - Runs on pristine rotating proxy servers - bypasses all YT bot-checks!)
+        cobalt_ext = "mp4" if is_video else "mp3"
+        cobalt_dest = os.path.join(cache_dir, f"{video_id}.{cobalt_ext}")
+        cobalt_success = await loop.run_in_executor(None, self._download_via_cobalt, video_id, cobalt_dest, is_video)
+        if cobalt_success and os.path.exists(cobalt_dest) and os.path.getsize(cobalt_dest) > 0:
+            logger.info(
+                "[COBALT] Primary download_success track_id=%s file_exists=true file_size=%d path=%s",
+                video_id,
+                os.path.getsize(cobalt_dest),
+                cobalt_dest,
+            )
+            self._clean_cache_dir(cache_dir)
+            return cobalt_dest
+
+        # 2. Local Native yt-dlp Downloader (Fallback if Cobalt is rate-limited or down)
         success = False
         if is_video:
             success = await loop.run_in_executor(None, self._download_video_ytdlp, yt_watch_url, dest_template, video_id, True)
@@ -1479,7 +1502,7 @@ class MediaExtractor:
             self._clean_cache_dir(cache_dir)
             return cached_file
 
-        # 2. MODE B fallback download (without cookies if MODE A with cookies failed)
+        # 3. MODE B fallback download (without cookies if MODE A with cookies failed)
         if has_cookies and not cached_file:
             logger.info("[YTDLP] retrying_without_cookies")
             if is_video:
@@ -1535,11 +1558,12 @@ class MediaExtractor:
                     self._clean_cache_dir(cache_dir)
                     return direct_dest
 
-            # Try SoundCloud with title only first, then fallback to title + artist
+            # For SoundCloud, we MUST prioritize title + artist first to ensure we get the exact correct song instead of random covers or spam uploads with the same title!
             sc_track_found = False
-            sc_queries_to_try = [clean_title]
+            sc_queries_to_try = []
             if clean_artist and clean_artist.strip() and clean_artist.strip() != clean_title:
                 sc_queries_to_try.append(f"{clean_title} {clean_artist}".strip())
+            sc_queries_to_try.append(clean_title)
 
             for sc_q in sc_queries_to_try:
                 if not sc_q or not sc_q.strip():
@@ -1580,3 +1604,70 @@ class MediaExtractor:
         is_vid = getattr(track, "is_video", False)
         path = await self.prepare_track(track, is_video=is_vid)
         return bool(path and os.path.exists(path) and os.path.getsize(path) > 0)
+
+    def _download_via_cobalt(self, video_id: str, dest_path: str, is_video: bool = False) -> bool:
+        """Helper to download a YouTube video ID via Cobalt."""
+        yt_url = f"https://www.youtube.com/watch?v={video_id}"
+        return self._download_url_via_cobalt(yt_url, dest_path, is_video)
+
+    def _download_url_via_cobalt(self, target_url: str, dest_path: str, is_video: bool = False) -> bool:
+        """
+        Premium Web Downloader Fallback: Queries public Cobalt APIs to fetch direct high-speed stream links for any URL (YouTube, SoundCloud, TikTok, etc.).
+        This completely bypasses region locks, IP blocks, and bot-checks/captchas!
+        """
+        import json
+        import urllib.request
+        import urllib.error
+
+        payload = {
+            "url": target_url,
+            "isAudioOnly": not is_video,
+            "aFormat": "mp3" if not is_video else "best",
+            "vQuality": "720" if is_video else "max"
+        }
+        
+        # Public Cobalt API instances list for redundancy
+        instances = [
+            "https://api.cobalt.tools",
+            "https://cobalt.api.ryb.kr",
+            "https://cobalt-api.kwi.cat",
+            "https://api.cobalt.black"
+        ]
+
+        data_bytes = json.dumps(payload).encode("utf-8")
+        
+        for base_url in instances:
+            try:
+                # Some instances use /api/json, some use root /
+                endpoints = [f"{base_url}", f"{base_url}/api/json"]
+                for endpoint in endpoints:
+                    try:
+                        logger.info("[COBALT] Trying Cobalt download fallback for URL %s on %s", target_url[:80], endpoint)
+                        req = urllib.request.Request(
+                            endpoint,
+                            data=data_bytes,
+                            headers={
+                                "Accept": "application/json",
+                                "Content-Type": "application/json",
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                            },
+                            method="POST"
+                        )
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            res_data = json.loads(resp.read().decode("utf-8"))
+                            stream_url = res_data.get("url")
+                            if stream_url and stream_url.startswith("http"):
+                                logger.info("[COBALT] Found direct stream URL from Cobalt: %s", stream_url[:120])
+                                # Download the direct stream url
+                                d_ok = self._download_direct_url(stream_url, dest_path)
+                                if d_ok and os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+                                    logger.info("[COBALT] Cobalt fallback download success!")
+                                    return True
+                    except Exception as sub_e:
+                        logger.debug("[COBALT-SUB-ERROR] %s: %s", endpoint, str(sub_e))
+                        continue
+            except Exception as e:
+                logger.debug("[COBALT-ERROR] Instance %s failed: %s", base_url, str(e))
+                continue
+                
+        return False
