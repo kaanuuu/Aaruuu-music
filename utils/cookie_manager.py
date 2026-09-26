@@ -60,6 +60,13 @@ def get_youtube_cookie_file() -> Optional[str]:
         if validate_netscape_cookies_text(cookies_text):
             try:
                 tmp_path = "/tmp/ytdlp_cookies.txt"
+                try:
+                    os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+                except Exception:
+                    # Fallback to local cache directory if /tmp is completely blocked or read-only
+                    tmp_path = "cache/ytdlp_cookies.txt"
+                    os.makedirs("cache", exist_ok=True)
+
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     # Ensure standard Netscape header if missing
                     if "# Netscape" not in cookies_text:
@@ -67,7 +74,10 @@ def get_youtube_cookie_file() -> Optional[str]:
                     f.write(cookies_text.strip() + "\n")
 
                 # Set restrictive 0o600 permissions
-                os.chmod(tmp_path, 0o600)
+                try:
+                    os.chmod(tmp_path, 0o600)
+                except Exception:
+                    pass
                 _CACHED_COOKIE_FILE = tmp_path
 
                 # Register shutdown cleanup
@@ -79,7 +89,7 @@ def get_youtube_cookie_file() -> Optional[str]:
             logger.warning("[YOUTUBE] cookies_configured=invalid (provided YTDLP_COOKIES_TEXT is not in Netscape format)")
 
     # Priority 2: Cookie file path via YOUTUBE_COOKIES_FILE, YTDLP_COOKIES, or COOKIES
-    file_path = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES") or "/tmp/cookies.txt"
+    file_path = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YTDLP_COOKIES") or os.getenv("COOKIES") or "cache/cookies.txt"
     if file_path and os.path.exists(file_path) and os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
