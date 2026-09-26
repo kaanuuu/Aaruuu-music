@@ -201,14 +201,22 @@ class MediaExtractor:
         if not current_track:
             return None
 
-        def clean_title_for_comparison(title: str) -> str:
+        def clean_song_title_only(title: str, artist: str) -> str:
             if not title:
                 return ""
             t = title.lower()
+            # Strip artist name words to isolate the core song title
+            if artist:
+                art = artist.lower()
+                for word in art.split():
+                    if len(word) > 2:
+                        t = t.replace(word, "")
+            # Remove standard music version/descriptor words
             for word in [
                 "official video", "official audio", "full video", "lyric video", "lyrics video",
                 "official", "music", "video", "lyric", "lyrics", "audio", "hd", "4k", "cover", 
-                "remix", "lirical", "visualizer", "prod.", "feat.", "ft.", "original", "song", "mp3"
+                "remix", "lirical", "visualizer", "prod.", "feat.", "ft.", "original", "song", "mp3",
+                "slowed", "reverb", "lofi", "mix", "version", "full", "audio song", "video song"
             ]:
                 t = t.replace(word, "")
             import re
@@ -229,11 +237,11 @@ class MediaExtractor:
         
         if curr_vid:
             ex_vids.add(curr_vid)
-        ex_cleaned_titles.add(clean_title_for_comparison(current_track.title))
+        ex_cleaned_titles.add(clean_song_title_only(current_track.title, current_track.artist))
 
         if excluded_tracks:
             for et in excluded_tracks:
-                ex_cleaned_titles.add(clean_title_for_comparison(et.title))
+                ex_cleaned_titles.add(clean_song_title_only(et.title, et.artist))
                 eid = getattr(et, "track_id", "")
                 if eid.startswith("yt_"):
                     ex_vids.add(eid.replace("yt_", ""))
@@ -316,7 +324,7 @@ class MediaExtractor:
                                 continue
                             
                             # Check if duplicate by ID or cleaned title
-                            cleaned_candidate = clean_title_for_comparison(title)
+                            cleaned_candidate = clean_song_title_only(title, channel)
                             if vid in ex_vids or cleaned_candidate in ex_cleaned_titles:
                                 continue
                                 
