@@ -307,8 +307,15 @@ class VoiceChatAssistant:
                             if not chat_id and hasattr(update, "call"):
                                 chat_id = getattr(update.call, "chat_id", None)
                             if chat_id:
-                                logger.info("Voice Chat: Stream ended in chat %s. Auto-advancing...", chat_id)
+                                # Guard against transient stream end notifications from the previous stream teardown
+                                import time
                                 from player.manager import player_manager
+                                state = await player_manager.get_state(chat_id)
+                                if state and state.is_playing and state.started_at > 0 and (time.time() - state.started_at < 3.0):
+                                    logger.info("Voice Chat: Ignored transient/stale StreamEnded update in chat %s (Track started %.1fs ago).", chat_id, time.time() - state.started_at)
+                                    return
+
+                                logger.info("Voice Chat: Stream ended in chat %s. Auto-advancing...", chat_id)
                                 await player_manager.auto_advance(chat_id)
                         except Exception as se_err:
                             logger.debug("Voice Chat stream end handler note: %s", str(se_err))
@@ -323,8 +330,15 @@ class VoiceChatAssistant:
                                 if not chat_id and hasattr(update, "call"):
                                     chat_id = getattr(update.call, "chat_id", None)
                                 if chat_id:
-                                    logger.info("Voice Chat: %s in chat %s. Auto-advancing...", up_type, chat_id)
+                                    # Guard against transient stream end notifications from the previous stream teardown
+                                    import time
                                     from player.manager import player_manager
+                                    state = await player_manager.get_state(chat_id)
+                                    if state and state.is_playing and state.started_at > 0 and (time.time() - state.started_at < 3.0):
+                                        logger.info("Voice Chat: Ignored transient/stale %s update in chat %s (Track started %.1fs ago).", up_type, chat_id, time.time() - state.started_at)
+                                        return
+
+                                    logger.info("Voice Chat: %s in chat %s. Auto-advancing...", up_type, chat_id)
                                     await player_manager.auto_advance(chat_id)
                         except Exception:
                             pass
@@ -646,7 +660,7 @@ class VoiceChatAssistant:
                     else:
                         params = f"-ss {seek_seconds}" if seek_seconds > 0.0 else ""
                     
-                    if not is_video:
+                    if not is_video and is_remote:
                         if params:
                             params += " -vn"
                         else:
