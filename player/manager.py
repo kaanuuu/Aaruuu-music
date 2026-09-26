@@ -512,8 +512,45 @@ class PlayerManager:
                         await bot_api_client.send_message(
                             chat_id, f"⏹️ {to_bold_sans('AUTOPLAY')}: Automatically stopped after 5 consecutive songs to save bandwidth. Play a new song manually to reset!"
                         )
-                    except Exception:
-                        pass
+                        
+                        # Generate next recommendation with play button
+                        loop = asyncio.get_running_loop()
+                        auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track, list(state.history))
+                        if auto_track:
+                            RECOMMENDATION_CACHE[chat_id] = auto_track
+                            rec_text = (
+                                f"📻 {to_bold_sans('AUTOPLAY FINISHED')}\n\n"
+                                f"Recommended next song matching your taste:\n"
+                                f"<b>{auto_track.title}</b> — <i>{auto_track.artist}</i>"
+                            )
+                            rec_rich = {
+                                "type": "rich_message",
+                                "blocks": [
+                                    {
+                                        "type": "heading",
+                                        "text": to_bold_sans("AUTOPLAY LIMIT REACHED"),
+                                        "size": 1,
+                                    },
+                                    {
+                                        "type": "paragraph",
+                                        "text": rec_text,
+                                    },
+                                    {
+                                        "type": "buttons",
+                                        "buttons": [
+                                            {
+                                                "text": "▶ Play Recommendation",
+                                                "style": "success",
+                                                "callback_data": f"play_rec:{auto_track.track_id}",
+                                            }
+                                        ],
+                                        "align": "center",
+                                    },
+                                ],
+                            }
+                            await bot_api_client.send_rich_message(chat_id, rec_rich)
+                    except Exception as e:
+                        logger.warning("Failed to send recommendation rich message on autoplay limit: %s", str(e))
                 else:
                     loop = asyncio.get_running_loop()
                     auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track, list(state.history))
@@ -566,6 +603,50 @@ class PlayerManager:
                                     pass
                                 
                                 return auto_track, f"Autoplayed next song: {auto_track.title}"
+
+            # If autoplay is off and old track finished, generate next recommendation with play button
+            if not state.autoplay and old_track:
+                try:
+                    from bot.api import bot_api_client
+                    from utils.typography import to_bold_sans
+                    loop = asyncio.get_running_loop()
+                    auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track, list(state.history))
+                    if auto_track:
+                        RECOMMENDATION_CACHE[chat_id] = auto_track
+                        rec_text = (
+                            f"🎵 {to_bold_sans('MUSIC FINISHED')}\n\n"
+                            f"Finished playing: <b>{old_track.title}</b>\n\n"
+                            f"💡 {to_bold_sans('RECOMMENDED NEXT')}:\n"
+                            f"<b>{auto_track.title}</b> — {auto_track.artist}"
+                        )
+                        rec_rich = {
+                            "type": "rich_message",
+                            "blocks": [
+                                {
+                                    "type": "heading",
+                                    "text": to_bold_sans("MUSIC FINISHED"),
+                                    "size": 1,
+                                },
+                                {
+                                    "type": "paragraph",
+                                    "text": rec_text,
+                                },
+                                {
+                                    "type": "buttons",
+                                    "buttons": [
+                                        {
+                                            "text": "▶ Play Recommendation",
+                                            "style": "success",
+                                            "callback_data": f"play_rec:{auto_track.track_id}",
+                                        }
+                                    ],
+                                    "align": "center",
+                                },
+                            ],
+                        }
+                        await bot_api_client.send_rich_message(chat_id, rec_rich)
+                except Exception as e:
+                    logger.warning("Failed to send recommendation rich message when autoplay off: %s", str(e))
 
             # Delete old player message if any so chat is left completely clean
             if state.player_message_id:
