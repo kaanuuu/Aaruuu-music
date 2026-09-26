@@ -1621,6 +1621,10 @@ class MediaExtractor:
 
         payload = {
             "url": target_url,
+            "downloadMode": "audio" if not is_video else "video",
+            "audioFormat": "mp3" if not is_video else "best",
+            "videoQuality": "720" if is_video else "1080",
+            # Legacy fields for backward compatibility with older Cobalt instances
             "isAudioOnly": not is_video,
             "aFormat": "mp3" if not is_video else "best",
             "vQuality": "720" if is_video else "max"
@@ -1660,9 +1664,17 @@ class MediaExtractor:
                                 logger.info("[COBALT] Found direct stream URL from Cobalt: %s", stream_url[:120])
                                 # Download the direct stream url
                                 d_ok = self._download_direct_url(stream_url, dest_path)
-                                if d_ok and os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
-                                    logger.info("[COBALT] Cobalt fallback download success!")
+                                if d_ok and os.path.exists(dest_path) and os.path.getsize(dest_path) > 50 * 1024:
+                                    logger.info("[COBALT] Cobalt fallback download success! File size: %d bytes", os.path.getsize(dest_path))
                                     return True
+                                else:
+                                    # Clean up invalid or corrupted files immediately so cache lookup does not find them
+                                    if os.path.exists(dest_path):
+                                        try:
+                                            os.remove(dest_path)
+                                        except Exception:
+                                            pass
+                                    logger.warning("[COBALT] Downloaded file is too small or corrupted (<50KB). Discarding.")
                     except Exception as sub_e:
                         logger.debug("[COBALT-SUB-ERROR] %s: %s", endpoint, str(sub_e))
                         continue
