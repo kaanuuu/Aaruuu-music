@@ -1115,13 +1115,18 @@ class MediaExtractor:
                 "outtmpl": dest_path,
                 "noplaylist": True,
                 "quiet": True,
-                "no_warnings": False,
+                "no_warnings": True,
                 "nocheckcertificate": True,
-                "retries": 2,
-                "fragment_retries": 2,
+                "retries": 3,
+                "fragment_retries": 3,
                 "socket_timeout": 20,
                 "continuedl": True,
                 "logger": YtDlpQuietLogger(),
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android", "ios"],
+                    }
+                },
             }
             cookie_file = self.cookies_path if use_cookies else None
             if cookie_file and os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
@@ -1168,13 +1173,18 @@ class MediaExtractor:
                 "outtmpl": dest_path,
                 "noplaylist": True,
                 "quiet": True,
-                "no_warnings": False,
+                "no_warnings": True,
                 "nocheckcertificate": True,
-                "retries": 2,
-                "fragment_retries": 2,
+                "retries": 3,
+                "fragment_retries": 3,
                 "socket_timeout": 20,
                 "continuedl": True,
                 "logger": YtDlpQuietLogger(),
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android", "ios"],
+                    }
+                },
             }
             cookie_file = self.cookies_path if use_cookies else None
             if cookie_file and os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
@@ -1422,37 +1432,7 @@ class MediaExtractor:
         logger.info("cache_hit=no")
         logger.info("attempt=1")
 
-        # 1. First try resolving direct stream URL using YouTubeProvider's advanced multi-attempt emulators
-        resolved_track = None
-        try:
-            if is_video:
-                resolved_track = await loop.run_in_executor(
-                    None,
-                    youtube_provider._extract_video_ytdlp,
-                    yt_watch_url,
-                    True,
-                    int(track.requester_user_id or 0),
-                    getattr(track, "requester_name", "User")
-                )
-            else:
-                resolved_track = await loop.run_in_executor(
-                    None,
-                    youtube_provider.get_track,
-                    video_id,
-                    int(track.requester_user_id or 0),
-                    getattr(track, "requester_name", "User")
-                )
-        except Exception as e:
-            logger.debug("YouTubeProvider stream resolution exception: %s", str(e))
-
-        if resolved_track and resolved_track.stream_url:
-            # Instant playback mode: return the stream_url directly to play instantly!
-            track.stream_url = resolved_track.stream_url
-            logger.info("[YTDLP] Instant direct stream playback initiated for track_id=%s", video_id)
-            return resolved_track.stream_url
-
-        # 2. Fallback to local yt-dlp download if direct stream resolution/download failed or was blocked
-        logger.info("[YTDLP] Direct stream extraction failed or was blocked. Retrying local downloader fallback...")
+        # 1. Download local file using highly resilient native emulated yt-dlp downloader
         success = False
         if is_video:
             success = await loop.run_in_executor(None, self._download_video_ytdlp, yt_watch_url, dest_template, video_id, True)
@@ -1473,7 +1453,7 @@ class MediaExtractor:
             self._clean_cache_dir(cache_dir)
             return cached_file
 
-        # 3. MODE B fallback download (without cookies if MODE A with cookies failed)
+        # 2. MODE B fallback download (without cookies if MODE A with cookies failed)
         if has_cookies and not cached_file:
             logger.info("[YTDLP] retrying_without_cookies")
             if is_video:
@@ -1531,6 +1511,4 @@ class MediaExtractor:
         """Downloads a track's media to local cache file for PyTgCalls playback."""
         is_vid = getattr(track, "is_video", False)
         path = await self.prepare_track(track, is_video=is_vid)
-        if path and path.startswith(("http://", "https://")):
-            return True
         return bool(path and os.path.exists(path) and os.path.getsize(path) > 0)
