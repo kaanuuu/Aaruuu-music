@@ -123,7 +123,25 @@ class YouTubeProvider(BaseProvider):
         }
 
         configs = [
-            # Attempt 1: Standard web client with Node JS runtime
+            # Attempt 1: Native Android & iOS Client emulation (Most resilient to bypass bot checks)
+            {
+                "name": "native_android",
+                "opts": {
+                    "format": "bestaudio/best",
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "socket_timeout": 10,
+                    "logger": YtDlpQuietLogger(),
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": ["android", "ios"],
+                        }
+                    },
+                },
+            },
+            # Attempt 2: Standard web client with Node JS runtime
             {
                 "name": "standard_web",
                 "opts": {
@@ -136,9 +154,14 @@ class YouTubeProvider(BaseProvider):
                     "logger": YtDlpQuietLogger(),
                     "js_runtimes": {"node": {}},
                     "http_headers": base_headers_desktop,
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": ["web", "mweb", "android"],
+                        }
+                    },
                 },
             },
-            # Attempt 2: Mobile / Android web client
+            # Attempt 3: Mobile / Android web client
             {
                 "name": "mobile_web",
                 "opts": {
@@ -151,6 +174,11 @@ class YouTubeProvider(BaseProvider):
                     "logger": YtDlpQuietLogger(),
                     "js_runtimes": {"node": {}},
                     "http_headers": base_headers_mobile,
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": ["mweb", "android"],
+                        }
+                    },
                 },
             },
         ]

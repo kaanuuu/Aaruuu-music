@@ -1,6 +1,6 @@
 aiohttp==3.9.5
 # Updated yt-dlp version for Youtube player_client compatibility and Netscape cookiefile handling
-yt-dlp>=2026.3.13
+yt-dlp>=2024.12.1
 python-dotenv==1.0.1
 pyrogram==2.0.106
 py-tgcalls==2.2.0
