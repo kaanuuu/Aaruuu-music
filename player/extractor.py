@@ -1124,7 +1124,7 @@ class MediaExtractor:
                 "logger": YtDlpQuietLogger(),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["android", "ios"],
+                        "player_client": ["web", "mweb", "android", "ios"],
                     }
                 },
             }
@@ -1182,7 +1182,7 @@ class MediaExtractor:
                 "logger": YtDlpQuietLogger(),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["android", "ios"],
+                        "player_client": ["web", "mweb", "android", "ios"],
                     }
                 },
             }
