@@ -948,9 +948,17 @@ class MediaExtractor:
     @staticmethod
     def _clean_search_query(raw_query: str) -> str:
         """Removes parentheses, brackets, and common video metadata tags for clean song search."""
-        q = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", raw_query)
+        if not raw_query:
+            return ""
+        # 1. Take only the first segment if there is a major separator to isolate track title
+        first_segment = raw_query
+        for sep in ("|", " - ", " — ", " ~ ", " : "):
+            if sep in first_segment:
+                first_segment = first_segment.split(sep)[0]
+        
+        q = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", first_segment)
         q = re.sub(r"\b(official|video|audio|lyric|lyrics|full|song|hd|4k|mv|remix|edition|version)\b", " ", q, flags=re.IGNORECASE)
-        q = re.sub(r"[\|,\-\_\+]", " ", q)
+        q = re.sub(r"[\|,\-\_\+…]", " ", q)
         return " ".join(q.split()).strip()
 
     def _extract_ytdlp(
@@ -1495,45 +1503,69 @@ class MediaExtractor:
         if not is_video:
             clean_title = self._clean_search_query(track.title)
             clean_artist = self._clean_search_query(track.artist) if track.artist and track.artist != "YouTube Music" else ""
-            fallback_query = f"{clean_title} {clean_artist}".strip() or track.title
-            
-            # JioSaavn fallback (Ultra-resilient: Direct CDN downloads never blocked by YouTube bot checks!)
-            logger.info(
-                "[MEDIA] Primary YouTube download failed for '%s' (id=%s). Initiating optional JioSaavn fallback for query: '%s'",
-                track.title,
-                video_id,
-                fallback_query,
-            )
-            try:
-                jio_track = self._extract_jiosaavn(fallback_query, 0, "System Fallback 📻")
-                if jio_track and jio_track.stream_url:
-                    direct_dest = os.path.join(cache_dir, f"{video_id}.mp3")
-                    d_ok = await loop.run_in_executor(None, self._download_direct_url, jio_track.stream_url, direct_dest)
-                    if d_ok and os.path.exists(direct_dest) and os.path.getsize(direct_dest) > 0:
-                        logger.info("[MEDIA] Optional JioSaavn fallback download succeeded for '%s'", track.title)
-                        self._clean_cache_dir(cache_dir)
-                        return direct_dest
-            except Exception as jio_err:
-                logger.debug("JioSaavn fallback download failed: %s", str(jio_err))
 
-            logger.info(
-                "[MEDIA] JioSaavn fallback empty or failed. Initiating optional SoundCloud fallback for query: '%s'",
-                fallback_query,
-            )
+            # Try JioSaavn with title only first, then fallback to title + artist
+            jio_track = None
+            jio_queries_to_try = [clean_title]
+            if clean_artist and clean_artist.strip() and clean_artist.strip() != clean_title:
+                jio_queries_to_try.append(f"{clean_title} {clean_artist}".strip())
 
-            # SoundCloud fallback via dedicated clean search helper
-            sc_target = f"scsearch3:{fallback_query}"
-            sc_success = await loop.run_in_executor(None, self._download_soundcloud_fallback, sc_target, dest_template, video_id)
-            cached_file = self._find_cached_file(video_id, cache_dir)
-            if sc_success and cached_file and os.path.exists(cached_file) and os.path.getsize(cached_file) > 0:
-                sz = os.path.getsize(cached_file)
+            for jio_q in jio_queries_to_try:
+                if not jio_q or not jio_q.strip():
+                    continue
                 logger.info(
-                    "[MEDIA] Optional SoundCloud fallback download succeeded for '%s' (file_size=%d)",
+                    "[MEDIA] Primary YouTube download failed for '%s' (id=%s). Initiating optional JioSaavn fallback for query: '%s'",
                     track.title,
-                    sz,
+                    video_id,
+                    jio_q,
                 )
-                self._clean_cache_dir(cache_dir)
-                return cached_file
+                try:
+                    res = self._extract_jiosaavn(jio_q, 0, "System Fallback 📻")
+                    if res and res.stream_url:
+                        jio_track = res
+                        break
+                except Exception as jio_err:
+                    logger.debug("JioSaavn fallback query '%s' failed: %s", jio_q, str(jio_err))
+
+            if jio_track and jio_track.stream_url:
+                direct_dest = os.path.join(cache_dir, f"{video_id}.mp3")
+                d_ok = await loop.run_in_executor(None, self._download_direct_url, jio_track.stream_url, direct_dest)
+                if d_ok and os.path.exists(direct_dest) and os.path.getsize(direct_dest) > 0:
+                    logger.info("[MEDIA] Optional JioSaavn fallback download succeeded for '%s'", track.title)
+                    self._clean_cache_dir(cache_dir)
+                    return direct_dest
+
+            # Try SoundCloud with title only first, then fallback to title + artist
+            sc_track_found = False
+            sc_queries_to_try = [clean_title]
+            if clean_artist and clean_artist.strip() and clean_artist.strip() != clean_title:
+                sc_queries_to_try.append(f"{clean_title} {clean_artist}".strip())
+
+            for sc_q in sc_queries_to_try:
+                if not sc_q or not sc_q.strip():
+                    continue
+                logger.info(
+                    "[MEDIA] JioSaavn fallback empty or failed. Initiating optional SoundCloud fallback for query: '%s'",
+                    sc_q,
+                )
+                sc_target = f"scsearch3:{sc_q}"
+                sc_success = await loop.run_in_executor(None, self._download_soundcloud_fallback, sc_target, dest_template, video_id)
+                cached_file = self._find_cached_file(video_id, cache_dir)
+                if sc_success and cached_file and os.path.exists(cached_file) and os.path.getsize(cached_file) > 0:
+                    sc_track_found = True
+                    break
+
+            if sc_track_found:
+                cached_file = self._find_cached_file(video_id, cache_dir)
+                if cached_file and os.path.exists(cached_file) and os.path.getsize(cached_file) > 0:
+                    sz = os.path.getsize(cached_file)
+                    logger.info(
+                        "[MEDIA] Optional SoundCloud fallback download succeeded for '%s' (file_size=%d)",
+                        track.title,
+                        sz,
+                    )
+                    self._clean_cache_dir(cache_dir)
+                    return cached_file
 
         logger.warning(
             "[YTDLP] download_failed track_id=%s source=%s cookies_configured=%s error_code=YTDLP_DOWNLOAD_FAILED",
