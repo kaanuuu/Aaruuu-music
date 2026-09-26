@@ -1496,10 +1496,28 @@ class MediaExtractor:
             clean_title = self._clean_search_query(track.title)
             clean_artist = self._clean_search_query(track.artist) if track.artist and track.artist != "YouTube Music" else ""
             fallback_query = f"{clean_title} {clean_artist}".strip() or track.title
+            
+            # JioSaavn fallback (Ultra-resilient: Direct CDN downloads never blocked by YouTube bot checks!)
             logger.info(
-                "[MEDIA] Primary YouTube download failed for '%s' (id=%s). Initiating optional SoundCloud fallback for query: '%s'",
+                "[MEDIA] Primary YouTube download failed for '%s' (id=%s). Initiating optional JioSaavn fallback for query: '%s'",
                 track.title,
                 video_id,
+                fallback_query,
+            )
+            try:
+                jio_track = self._extract_jiosaavn(fallback_query, 0, "System Fallback 📻")
+                if jio_track and jio_track.stream_url:
+                    direct_dest = os.path.join(cache_dir, f"{video_id}.mp3")
+                    d_ok = await loop.run_in_executor(None, self._download_direct_url, jio_track.stream_url, direct_dest)
+                    if d_ok and os.path.exists(direct_dest) and os.path.getsize(direct_dest) > 0:
+                        logger.info("[MEDIA] Optional JioSaavn fallback download succeeded for '%s'", track.title)
+                        self._clean_cache_dir(cache_dir)
+                        return direct_dest
+            except Exception as jio_err:
+                logger.debug("JioSaavn fallback download failed: %s", str(jio_err))
+
+            logger.info(
+                "[MEDIA] JioSaavn fallback empty or failed. Initiating optional SoundCloud fallback for query: '%s'",
                 fallback_query,
             )
 
