@@ -1,3 +1,0 @@
-"""
-Aaruu Music - Database Package
-"""
