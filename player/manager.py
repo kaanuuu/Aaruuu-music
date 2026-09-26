@@ -111,7 +111,7 @@ class PlayerManager:
     async def _timeline_loop(self, chat_id: int) -> None:
         try:
             while True:
-                await asyncio.sleep(7)
+                await asyncio.sleep(1)
                 state = self._states.get(chat_id)
                 if not state or not state.is_playing:
                     break
@@ -508,46 +508,56 @@ class PlayerManager:
                     logger.info("[AUTOPLAY] Autoplay limit (5 tracks) reached for chat %s. Stopping automatic playback.", chat_id)
                     try:
                         from bot.api import bot_api_client
-                        from utils.typography import to_bold_sans
-                        await bot_api_client.send_message(
-                            chat_id, f"⏹️ {to_bold_sans('AUTOPLAY')}: Automatically stopped after 5 consecutive songs to save bandwidth. Play a new song manually to reset!"
-                        )
-                        
-                        # Generate next recommendation with play button
+                        from utils.typography import to_bold_sans, to_small_caps
                         loop = asyncio.get_running_loop()
                         auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track, list(state.history))
                         if auto_track:
                             RECOMMENDATION_CACHE[chat_id] = auto_track
                             rec_text = (
-                                f"📻 {to_bold_sans('AUTOPLAY FINISHED')}\n\n"
-                                f"Recommended next song matching your taste:\n"
-                                f"<b>{auto_track.title}</b> — <i>{auto_track.artist}</i>"
+                                f"📻 {to_bold_sans('AUTOPLAY LIMIT REACHED')}\n\n"
+                                f"Autoplay has stopped after 5 consecutive tracks to save your server bandwidth.\n\n"
+                                f"💡 {to_bold_sans('RECOMMENDED NEXT')}:\n"
+                                f"📀 <b>{auto_track.title}</b> — {auto_track.artist}\n"
+                                f"⏱️ {to_small_caps('duration')}: {auto_track.duration // 60}:{auto_track.duration % 60:02d}\n\n"
+                                f"👇 Tap the button below to resume playing!"
                             )
                             rec_rich = {
                                 "type": "rich_message",
                                 "blocks": [
                                     {
                                         "type": "heading",
-                                        "text": to_bold_sans("AUTOPLAY LIMIT REACHED"),
+                                        "text": to_bold_sans("AUTOPLAY PAUSED"),
                                         "size": 1,
-                                    },
-                                    {
-                                        "type": "paragraph",
-                                        "text": rec_text,
-                                    },
-                                    {
-                                        "type": "buttons",
-                                        "buttons": [
-                                            {
-                                                "text": "▶ Play Recommendation",
-                                                "style": "success",
-                                                "callback_data": f"play_rec:{auto_track.track_id}",
-                                            }
-                                        ],
-                                        "align": "center",
                                     },
                                 ],
                             }
+                            # Add thumbnail if available
+                            if isinstance(auto_track.thumbnail, str) and auto_track.thumbnail.startswith(("http://", "https://")):
+                                rec_rich["blocks"].append({
+                                    "type": "photo",
+                                    "photo": {
+                                        "type": "photo",
+                                        "media": auto_track.thumbnail,
+                                    },
+                                })
+                                
+                            rec_rich["blocks"].extend([
+                                {
+                                    "type": "paragraph",
+                                    "text": rec_text,
+                                },
+                                {
+                                    "type": "buttons",
+                                    "buttons": [
+                                        {
+                                            "text": "⏭️ Play Next Music",
+                                            "style": "success",
+                                            "callback_data": f"play_rec:{auto_track.track_id}",
+                                        }
+                                    ],
+                                    "align": "center",
+                                },
+                            ])
                             await bot_api_client.send_rich_message(chat_id, rec_rich)
                     except Exception as e:
                         logger.warning("Failed to send recommendation rich message on autoplay limit: %s", str(e))
@@ -608,42 +618,58 @@ class PlayerManager:
             if not state.autoplay and old_track:
                 try:
                     from bot.api import bot_api_client
-                    from utils.typography import to_bold_sans
+                    from utils.typography import to_bold_sans, to_small_caps
                     loop = asyncio.get_running_loop()
                     auto_track = await loop.run_in_executor(None, shared_extractor.extract_related_track, old_track, list(state.history))
                     if auto_track:
                         RECOMMENDATION_CACHE[chat_id] = auto_track
                         rec_text = (
-                            f"🎵 {to_bold_sans('MUSIC FINISHED')}\n\n"
-                            f"Finished playing: <b>{old_track.title}</b>\n\n"
-                            f"💡 {to_bold_sans('RECOMMENDED NEXT')}:\n"
-                            f"<b>{auto_track.title}</b> — {auto_track.artist}"
+                            f"✅ {to_bold_sans('SONG FINISHED PLAYING')}\n\n"
+                            f"🎵 {to_small_caps('finished')}: <b>{old_track.title}</b>\n"
+                            f"👤 {to_small_caps('artist')}: {old_track.artist}\n\n"
+                            f"💡 {to_bold_sans('NEXT RECOMMENDED MUSIC')}:\n"
+                            f"📀 <b>{auto_track.title}</b> — {auto_track.artist}\n"
+                            f"⏱️ {to_small_caps('duration')}: {auto_track.duration // 60}:{auto_track.duration % 60:02d}\n\n"
+                            f"👇 Tap the button below to start playing the next song instantly!"
                         )
                         rec_rich = {
                             "type": "rich_message",
                             "blocks": [
                                 {
                                     "type": "heading",
-                                    "text": to_bold_sans("MUSIC FINISHED"),
+                                    "text": to_bold_sans("SONG FINISHED"),
                                     "size": 1,
-                                },
-                                {
-                                    "type": "paragraph",
-                                    "text": rec_text,
-                                },
-                                {
-                                    "type": "buttons",
-                                    "buttons": [
-                                        {
-                                            "text": "▶ Play Recommendation",
-                                            "style": "success",
-                                            "callback_data": f"play_rec:{auto_track.track_id}",
-                                        }
-                                    ],
-                                    "align": "center",
                                 },
                             ],
                         }
+                        
+                        # Add thumbnail if available
+                        if isinstance(auto_track.thumbnail, str) and auto_track.thumbnail.startswith(("http://", "https://")):
+                            rec_rich["blocks"].append({
+                                "type": "photo",
+                                "photo": {
+                                    "type": "photo",
+                                    "media": auto_track.thumbnail,
+                                },
+                            })
+                            
+                        rec_rich["blocks"].extend([
+                            {
+                                "type": "paragraph",
+                                "text": rec_text,
+                            },
+                            {
+                                "type": "buttons",
+                                "buttons": [
+                                    {
+                                        "text": "⏭️ Play Next Music",
+                                        "style": "success",
+                                        "callback_data": f"play_rec:{auto_track.track_id}",
+                                    }
+                                ],
+                                "align": "center",
+                            },
+                        ])
                         await bot_api_client.send_rich_message(chat_id, rec_rich)
                 except Exception as e:
                     logger.warning("Failed to send recommendation rich message when autoplay off: %s", str(e))

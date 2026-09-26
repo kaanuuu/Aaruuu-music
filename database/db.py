@@ -22,6 +22,7 @@ class Database:
         self._lock = asyncio.Lock()
         self._conn: Optional[sqlite3.Connection] = None
         self._blocked_users_cache: set = set()
+        self._banner_cache: Dict[str, str] = {}
 
     def _get_connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -90,6 +91,9 @@ class Database:
             rows = cursor.fetchall()
             self._blocked_users_cache = {row["user_id"] for row in rows}
             logger.info("Loaded %d blocked user(s) into memory cache.", len(self._blocked_users_cache))
+            
+            # Pre-load banners into memory cache for zero-latency lookups
+            self._load_banners_sync()
 
     async def register_chat(
         self, chat_id: int, chat_title: str = "", chat_type: str = ""
@@ -349,6 +353,47 @@ class Database:
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, reason, blocked_by, blocked_at FROM blocked_users ORDER BY blocked_at DESC")
         return [dict(row) for row in cursor.fetchall()]
+
+    async def set_banner(self, section: str, url: str) -> None:
+        """Sets a custom banner for a section, updates cache and DB."""
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._set_banner_sync, section, url)
+
+    def _set_banner_sync(self, section: str, url: str) -> None:
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (f"banner:{section}", url),
+            )
+        self._banner_cache[section] = url
+        logger.info("Banner updated for section '%s' -> %s", section, url)
+
+    def _load_banners_sync(self) -> None:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM settings WHERE key LIKE 'banner:%'")
+        for row in cursor.fetchall():
+            k = row["key"].replace("banner:", "", 1)
+            self._banner_cache[k] = row["value"]
+        logger.info("Loaded %d custom banner(s) into memory cache.", len(self._banner_cache))
+
+    def get_cached_banner(self, section: str) -> str:
+        """Zero-latency synchronous retrieval of cached section banner."""
+        FALLBACKS = {
+            "home": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+            "getting_started": "https://images.unsplash.com/photo-1507676184212-d03ab07a01bf?w=800&auto=format&fit=crop&q=80",
+            "find_play": "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=800&auto=format&fit=crop&q=80",
+            "all_commands": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&auto=format&fit=crop&q=80",
+            "controls": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=800&auto=format&fit=crop&q=80",
+            "queue_repeat": "https://images.unsplash.com/photo-1483412033650-1015ddeb83d1?w=800&auto=format&fit=crop&q=80",
+            "group_settings": "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=800&auto=format&fit=crop&q=80",
+            "group_admins": "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=800&auto=format&fit=crop&q=80",
+            "troubleshooting": "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=800&auto=format&fit=crop&q=80",
+            "owner_sudo": "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800&auto=format&fit=crop&q=80",
+        }
+        return self._banner_cache.get(section) or FALLBACKS.get(section, FALLBACKS["home"])
 
     async def close(self) -> None:
         """Closes the active database connection."""

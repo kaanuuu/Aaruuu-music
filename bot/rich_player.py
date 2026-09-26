@@ -47,14 +47,14 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
     # Play/Pause toggle button (⏸ Pause for playing, ▶ Play for paused)
     if state.is_paused:
         play_pause_button = {
-            "text": "▶ Play",
+            "text": "▶ " + to_small_caps("play"),
             "style": "success",
             "callback_data": f"player:resume:{session}",
         }
         status_badge = "⏸ " + to_small_caps("paused")
     else:
         play_pause_button = {
-            "text": "⏸ Pause",
+            "text": "⏸ " + to_small_caps("pause"),
             "style": "primary",
             "callback_data": f"player:pause:{session}",
         }
@@ -71,22 +71,22 @@ def build_player_rich_ui(state: PlayerState, queue: TrackQueue) -> Dict[str, Any
     # Row 1: [ ≡ Queue ] [ ⏸ Pause / ▶ Play ] [ ↻ Replay ]
     row_1_buttons = [
         {
-            "text": "≡ Queue",
+            "text": "≡ " + to_small_caps("queue"),
             "style": "primary",
             "callback_data": f"player:queue:{session}",
         },
         play_pause_button,
         {
-            "text": "↻ Replay",
+            "text": "↻ " + to_small_caps("replay"),
             "style": "primary",
             "callback_data": f"player:replay:{session}",
         },
     ]
 
     # Row 2: [ » Skip ]
-    skip_text = "» Skip"
+    skip_text = "» " + to_small_caps("skip")
     if hasattr(state, "skip_votes") and len(state.skip_votes) > 0:
-        skip_text = f"» Skip ({len(state.skip_votes)}/3)"
+        skip_text = f"» " + to_small_caps("skip") + f" ({len(state.skip_votes)}/3)"
 
     row_2_buttons = [
         {
@@ -218,27 +218,27 @@ def build_queue_rich_message(state: PlayerState, queue: TrackQueue, is_closed: b
 
     action_buttons_row1 = [
         {
-            "text": "‹ Player",
+            "text": "‹ " + to_small_caps("player"),
             "style": "primary",
             "callback_data": f"player:nowplaying:{session}",
         },
         {
-            "text": "↻ Refresh",
+            "text": "↻ " + to_small_caps("refresh"),
             "style": "primary",
             "callback_data": f"player:queue:{session}",
         },
         {
-            "text": "− Undo",
+            "text": "− " + to_small_caps("undo"),
             "style": "primary",
             "callback_data": f"queue:undo:{session}",
         },
     ]
 
-    close_text = "■ Closed" if is_closed else "■ Close"
+    close_text = "■ " + to_small_caps("closed") if is_closed else "■ " + to_small_caps("close")
     close_cb = f"player:queue:{session}" if is_closed else f"player:close:{session}"
     action_buttons_row2 = [
         {
-            "text": "≡ Support",
+            "text": "≡ " + to_small_caps("support"),
             "url": SUPPORT_URL,
         },
         {
@@ -323,7 +323,7 @@ def build_search_rich_ui(
         text_lines.append(f"{i}. {to_bold_sans(tr.title[:45])}\n   👤 {tr.artist[:35]} | ⏱ {dur_str}\n")
         idx_zero_based = i - 1
         if selected_idx is not None and idx_zero_based == selected_idx:
-            btn_label = f"▶ Selected: {tr.title[:24]}"
+            btn_label = "▶ " + to_small_caps("selected") + f": {tr.title[:24]}"
             btn_style = "success"
         else:
             btn_label = f"{i}. {tr.title[:28]} — {tr.artist[:16]}"
@@ -376,12 +376,12 @@ def build_search_rich_ui(
             "type": "buttons",
             "buttons": [
                 {
-                    "text": "‹ Previous",
+                    "text": "‹ " + to_small_caps("previous"),
                     "style": "primary",
                     "callback_data": f"search_page:{prev_target}",
                 },
                 {
-                    "text": "Next ›",
+                    "text": to_small_caps("next") + " ›",
                     "style": "primary",
                     "callback_data": f"search_page:{next_target}",
                 },
@@ -390,7 +390,7 @@ def build_search_rich_ui(
         })
 
     # Cancel button block
-    cancel_text = "■ Cancelled" if is_closed else "■ Cancel"
+    cancel_text = "■ " + to_small_caps("cancelled") if is_closed else "■ " + to_small_caps("cancel")
     blocks.append({
         "type": "buttons",
         "buttons": [
@@ -414,13 +414,15 @@ def build_cancel_rich_ui(
     request_id: str,
     requester_id: int,
     status_text: str = "Processing request...",
-    button_text: str = "■ Cancel",
+    button_text: Optional[str] = None,
     button_style: str = "danger",
 ) -> Dict[str, Any]:
     """
     Constructs an interactive pending request message using Rich UI Button Blocks with a Cancel button.
     Guarantees the cancel button remains visible and updates state when cancelled.
     """
+    if button_text is None:
+        button_text = "■ " + to_small_caps("cancel")
     return {
         "type": "rich_message",
         "blocks": [

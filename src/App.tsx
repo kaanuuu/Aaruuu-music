@@ -3,7 +3,6 @@ import {
   Music,
   Terminal,
   Radio,
-  Play,
   Pause,
   SkipForward,
   SkipBack,
@@ -15,15 +14,15 @@ import {
   X,
   ShieldCheck,
   CheckCircle2,
-  Send,
-  Activity,
   HeartPulse,
 } from "lucide-react";
 
 export default function App() {
+  // Removed direct /download and /video commands per owner request
   const commands = [
     { cmd: "/start", desc: "Launch Aaruu Music interactive guide" },
     { cmd: "/play <song/URL>", desc: "Search & stream audio or add to queue" },
+    { cmd: "/vplay <video/URL>", desc: "Stream video directly in Voice Chat" },
     { cmd: "/pause", desc: "Pause current playback" },
     { cmd: "/resume", desc: "Resume paused playback" },
     { cmd: "/replay", desc: "Replay current song from 0:00" },
@@ -47,7 +46,7 @@ export default function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-6 md:p-12 selection:bg-cyan-500 selection:text-white">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-6 md:p-12 selection:bg-cyan-500 selection:text-white" style={{ fontFamily: "'SplineSans-Light', sans-serif" }}>
       <div className="max-w-4xl mx-auto space-y-8">
         {/* Header Banner */}
         <header className="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-slate-800 gap-4">
@@ -56,13 +55,13 @@ export default function App() {
               <Music className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                Aaruu Music
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
+              <h1 className="text-3xl tracking-tight text-white flex items-center gap-2" style={{ fontFamily: "'OptimusPrinceps', serif" }}>
+                AARUU MUSIC
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium font-sans">
                   Worker Mode
                 </span>
               </h1>
-              <p className="text-sm text-slate-400">
+              <p className="text-xs text-slate-400 uppercase tracking-widest mt-0.5">
                 Production Telegram Music Bot · Native Rich Message Player
               </p>
             </div>
@@ -77,9 +76,9 @@ export default function App() {
         {/* Telegram Rich Message Preview Card */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 md:p-8 space-y-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+            <h2 className="text-sm uppercase tracking-wider flex items-center gap-2 text-slate-300" style={{ fontFamily: "'OptimusPrinceps', serif" }}>
               <Terminal className="w-4 h-4 text-cyan-400" />
-              Telegram Native Rich Message UI Mockup
+              TELEGRAM NATIVE RICH MESSAGE UI MOCKUP
             </h2>
             <span className="text-xs text-slate-500 font-mono">sendRichMessage API</span>
           </div>
@@ -88,7 +87,7 @@ export default function App() {
           <div className="max-w-md mx-auto bg-slate-950 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4">
             <div className="flex justify-between items-start border-b border-slate-800/80 pb-3">
               <div>
-                <p className="font-bold text-white text-base">Aaruu Music</p>
+                <p className="text-lg text-white" style={{ fontFamily: "'OptimusPrinceps', serif" }}>AARUU MUSIC</p>
                 <p className="text-xs text-slate-400">Command requested by @telegram_user</p>
               </div>
               <span className="text-[10px] bg-cyan-950 text-cyan-300 px-2 py-0.5 rounded-full font-mono">
@@ -96,18 +95,19 @@ export default function App() {
               </span>
             </div>
 
-            {/* Album Cover */}
-            <div className="aspect-video w-full rounded-xl bg-gradient-to-tr from-cyan-900/40 via-slate-800 to-indigo-900/40 border border-slate-800 flex items-center justify-center overflow-hidden relative">
+            {/* Clean Album Cover (No borders, rounded corners, or other decorative wrappers) */}
+            <div className="w-full">
               <img
                 src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80"
                 alt="Track Cover"
-                className="w-full h-full object-cover opacity-80"
+                className="w-full h-auto block"
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent" />
-              <div className="absolute bottom-3 left-3 right-3 text-left">
-                <p className="font-semibold text-white text-sm truncate">Divine Melodies (Official Audio)</p>
-                <p className="text-xs text-slate-300">Aaruu Studio · 3:06</p>
-              </div>
+            </div>
+            
+            {/* Song Meta (With Optimus font for headline/track name in prominent big words) */}
+            <div className="text-center py-2">
+              <p className="text-3xl font-extrabold text-white tracking-wider uppercase font-optimus" style={{ fontFamily: "'OptimusPrinceps', serif" }}>DIVINE MELODIES</p>
+              <p className="text-xs text-slate-400 uppercase tracking-widest mt-1">Aaruu Studio · 3:06</p>
             </div>
 
             {/* Progress Line */}
@@ -199,9 +199,9 @@ export default function App() {
         {/* Command Reference */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 md:p-8 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+            <h2 className="text-base text-white flex items-center gap-2" style={{ fontFamily: "'OptimusPrinceps', serif" }}>
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-              Registered Telegram Commands Menu
+              REGISTERED TELEGRAM COMMANDS MENU
             </h2>
             <span className="text-xs text-slate-500 font-mono">Autocompletes on &apos;/&apos;</span>
           </div>
@@ -214,7 +214,7 @@ export default function App() {
                 <code className="text-cyan-400 font-mono font-medium text-xs">
                   {c.cmd}
                 </code>
-                <span className="text-slate-400 text-xs mt-1">{c.desc}</span>
+                <span className="text-slate-400 text-xs mt-1" style={{ fontFamily: "'SplineSans-Light', sans-serif" }}>{c.desc}</span>
               </div>
             ))}
           </div>

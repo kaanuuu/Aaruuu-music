@@ -1108,48 +1108,56 @@ class MediaExtractor:
             return False
 
     def _download_ytdlp(self, url_or_query: str, dest_path: str, video_id: str = "unknown", use_cookies: bool = True) -> bool:
-        try:
-            import yt_dlp
-            opts = {
-                "format": "bestaudio/best",
-                "outtmpl": dest_path,
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-                "nocheckcertificate": True,
-                "retries": 3,
-                "fragment_retries": 3,
-                "socket_timeout": 20,
-                "continuedl": True,
-                "logger": YtDlpQuietLogger(),
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["web", "mweb", "android", "ios"],
-                    }
-                },
-            }
-            cookie_file = self.cookies_path if use_cookies else None
-            if cookie_file and os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
-                if any(k in url_or_query.lower() for k in ("youtube.com", "youtu.be", "ytsearch")):
-                    opts["cookiefile"] = cookie_file
+        formats_to_try = [
+            ("bestaudio/best", {"youtube": {"player_client": ["web", "mweb", "android", "ios"]}}),
+            ("bestaudio/best", None),  # Try standard without custom player client restrictions
+            ("best", None),            # Universal fallback (guarantees format availability, yt-dlp can transcode)
+        ]
+        
+        last_err = None
+        for fmt, extractor_args in formats_to_try:
+            try:
+                import yt_dlp
+                opts = {
+                    "format": fmt,
+                    "outtmpl": dest_path,
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "nocheckcertificate": True,
+                    "retries": 3,
+                    "fragment_retries": 3,
+                    "socket_timeout": 20,
+                    "continuedl": True,
+                    "logger": YtDlpQuietLogger(),
+                }
+                if extractor_args:
+                    opts["extractor_args"] = extractor_args
+                    
+                cookie_file = self.cookies_path if use_cookies else None
+                if cookie_file and os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
+                    if any(k in url_or_query.lower() for k in ("youtube.com", "youtu.be", "ytsearch")):
+                        opts["cookiefile"] = cookie_file
 
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url_or_query])
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url_or_query])
 
-            parent_dir = os.path.dirname(dest_path)
-            prefix = os.path.splitext(os.path.basename(dest_path))[0]
-            if os.path.exists(parent_dir):
-                for fname in os.listdir(parent_dir):
-                    if fname.startswith(prefix + ".") and not fname.endswith(".part") and not fname.endswith(".ytdl"):
-                        fpath = os.path.join(parent_dir, fname)
-                        if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
-                            return True
-            return False
-        except Exception as e:
-            err_str = str(e).strip()
+                parent_dir = os.path.dirname(dest_path)
+                prefix = os.path.splitext(os.path.basename(dest_path))[0]
+                if os.path.exists(parent_dir):
+                    for fname in os.listdir(parent_dir):
+                        if fname.startswith(prefix + ".") and not fname.endswith(".part") and not fname.endswith(".ytdl"):
+                            fpath = os.path.join(parent_dir, fname)
+                            if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                                return True
+            except Exception as e:
+                last_err = e
+                continue
+                
+        if last_err:
+            err_str = str(last_err).strip()
             sanitized_err = re.sub(r'(cookie|token|auth|key|password)=[\w\.-]+', r'\1=***', err_str, flags=re.IGNORECASE)
             
-            # Classify errors securely
             err_lower = sanitized_err.lower()
             if "page needs to be reloaded" in err_lower or "reload" in err_lower:
                 classification = "YOUTUBE_EXTRACTION_OR_AUTH_ERROR"
@@ -1164,50 +1172,59 @@ class MediaExtractor:
             logger.warning("classification=%s", classification)
             logger.warning("error=%s", sanitized_err)
             return False
+        return False
 
     def _download_video_ytdlp(self, url_or_query: str, dest_path: str, video_id: str = "unknown", use_cookies: bool = True) -> bool:
-        try:
-            import yt_dlp
-            opts = {
-                "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best",
-                "outtmpl": dest_path,
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-                "nocheckcertificate": True,
-                "retries": 3,
-                "fragment_retries": 3,
-                "socket_timeout": 20,
-                "continuedl": True,
-                "logger": YtDlpQuietLogger(),
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["web", "mweb", "android", "ios"],
-                    }
-                },
-            }
-            cookie_file = self.cookies_path if use_cookies else None
-            if cookie_file and os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
-                if any(k in url_or_query.lower() for k in ("youtube.com", "youtu.be", "ytsearch")):
-                    opts["cookiefile"] = cookie_file
+        formats_to_try = [
+            ("bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best", {"youtube": {"player_client": ["web", "mweb", "android", "ios"]}}),
+            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", None),
+            ("best", None),
+        ]
+        
+        last_err = None
+        for fmt, extractor_args in formats_to_try:
+            try:
+                import yt_dlp
+                opts = {
+                    "format": fmt,
+                    "outtmpl": dest_path,
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "nocheckcertificate": True,
+                    "retries": 3,
+                    "fragment_retries": 3,
+                    "socket_timeout": 20,
+                    "continuedl": True,
+                    "logger": YtDlpQuietLogger(),
+                }
+                if extractor_args:
+                    opts["extractor_args"] = extractor_args
+                    
+                cookie_file = self.cookies_path if use_cookies else None
+                if cookie_file and os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
+                    if any(k in url_or_query.lower() for k in ("youtube.com", "youtu.be", "ytsearch")):
+                        opts["cookiefile"] = cookie_file
 
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url_or_query])
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url_or_query])
 
-            parent_dir = os.path.dirname(dest_path)
-            prefix = os.path.splitext(os.path.basename(dest_path))[0]
-            if os.path.exists(parent_dir):
-                for fname in os.listdir(parent_dir):
-                    if fname.startswith(prefix + ".") and not fname.endswith(".part") and not fname.endswith(".ytdl"):
-                        fpath = os.path.join(parent_dir, fname)
-                        if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
-                            return True
-            return False
-        except Exception as e:
-            err_str = str(e).strip()
+                parent_dir = os.path.dirname(dest_path)
+                prefix = os.path.splitext(os.path.basename(dest_path))[0]
+                if os.path.exists(parent_dir):
+                    for fname in os.listdir(parent_dir):
+                        if fname.startswith(prefix + ".") and not fname.endswith(".part") and not fname.endswith(".ytdl"):
+                            fpath = os.path.join(parent_dir, fname)
+                            if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                                return True
+            except Exception as e:
+                last_err = e
+                continue
+                
+        if last_err:
+            err_str = str(last_err).strip()
             sanitized_err = re.sub(r'(cookie|token|auth|key|password)=[\w\.-]+', r'\1=***', err_str, flags=re.IGNORECASE)
             
-            # Classify errors securely
             err_lower = sanitized_err.lower()
             if "page needs to be reloaded" in err_lower or "reload" in err_lower:
                 classification = "YOUTUBE_EXTRACTION_OR_AUTH_ERROR"
@@ -1222,6 +1239,7 @@ class MediaExtractor:
             logger.warning("classification=%s", classification)
             logger.warning("error=%s", sanitized_err)
             return False
+        return False
 
     def _download_soundcloud_fallback(self, search_target: str, dest_path: str, video_id: str = "unknown") -> bool:
         try:

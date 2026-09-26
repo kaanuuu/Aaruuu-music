@@ -1,3 +1,30 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@font-face {
+  font-family: 'OptimusPrinceps';
+  src: url('/fonts/OptimusPrinceps.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'SplineSans-Light';
+  src: url('/fonts/SplineSans-Light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  body {
+    font-family: 'SplineSans-Light', sans-serif;
+  }
+  
+  h1, h2, h3, h4, h5, h6, .font-optimus {
+    font-family: 'OptimusPrinceps', serif;
+    letter-spacing: 0.05em;
+  }
+}

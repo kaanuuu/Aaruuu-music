@@ -5,7 +5,12 @@ export default {
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
-    extend: {},
+    extend: {
+      fontFamily: {
+        optimus: ["OptimusPrinceps", "serif"],
+        spline: ["SplineSans-Light", "sans-serif"],
+      },
+    },
   },
   plugins: [],
 };

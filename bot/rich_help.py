@@ -7,7 +7,9 @@ Hides owner-only commands from non-owners and provides 1-tap support redirection
 
 from typing import Any, Dict, List
 from utils.typography import to_bold_sans, to_small_caps
+from database.db import Database
 
+db = Database()
 SUPPORT_URL = "https://t.me/wzzkaanu"
 
 
@@ -36,7 +38,6 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             f"• /play <song name> - Searches full audio and streams top result\n"
             f"• /vplay <video name> - Streams video directly into group Voice Chat\n"
             f"• /search <keyword> - Searches songs with interactive 1-5 selection\n"
-            f"• /song <name> - Search and play a specific song\n"
             f"• /nowplaying - Opens active player control panel"
         ),
         "all_commands": (
@@ -45,7 +46,6 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             f"• /play <song> - Stream audio music in Voice Chat\n"
             f"• /vplay <video> - Stream video directly in Voice Chat\n"
             f"• /search <song> - Interactive 1-5 song search selection\n"
-            f"• /song <name> - Search and play specific track\n"
             f"• /nowplaying - Interactive rich playback control card\n\n"
             f"🎛 {to_bold_sans('CONTROLS')}:\n"
             f"• /pause - Pause current playback\n"
@@ -171,7 +171,7 @@ def build_start_rich_message(guide_section: str = "home", is_owner: bool = False
             "type": "photo",
             "photo": {
                 "type": "photo",
-                "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+                "media": db.get_cached_banner(active_section),
             },
         },
         {

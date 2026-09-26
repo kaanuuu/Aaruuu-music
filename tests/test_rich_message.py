@@ -59,14 +59,14 @@ class TestRichMessages(unittest.TestCase):
         # Row 1 buttons: ≡ Queue, ⏸ Pause, ↻ Replay
         row1 = button_blocks[0]["buttons"]
         self.assertEqual(len(row1), 3)
-        self.assertEqual(row1[0]["text"], "≡ Queue")
-        self.assertEqual(row1[1]["text"], "⏸ Pause")
-        self.assertEqual(row1[2]["text"], "↻ Replay")
+        self.assertEqual(row1[0]["text"], "≡ " + to_small_caps("queue"))
+        self.assertEqual(row1[1]["text"], "⏸ " + to_small_caps("pause"))
+        self.assertEqual(row1[2]["text"], "↻ " + to_small_caps("replay"))
 
         # Row 2 buttons: » Skip
         row2 = button_blocks[1]["buttons"]
         self.assertEqual(len(row2), 1)
-        self.assertEqual(row2[0]["text"], "» Skip")
+        self.assertEqual(row2[0]["text"], "» " + to_small_caps("skip"))
 
     def test_build_player_paused_toggle(self):
         self.state.play(self.track, {"name": "john_doe", "id": 12345})
@@ -76,7 +76,7 @@ class TestRichMessages(unittest.TestCase):
         row1 = button_blocks[0]["buttons"]
 
         # Middle button should now be Resume (▶ Play) with success style
-        self.assertEqual(row1[1]["text"], "▶ Play")
+        self.assertEqual(row1[1]["text"], "▶ " + to_small_caps("play"))
         self.assertEqual(row1[1]["style"], "success")
         self.assertIn("player:resume:", row1[1]["callback_data"])
 
@@ -137,7 +137,7 @@ class TestRichMessages(unittest.TestCase):
         button_blocks = [b for b in blocks if b.get("type") == "buttons"]
         self.assertGreaterEqual(len(button_blocks), 2)
         # Cancel button is attached in search_msg
-        cancel_btn = next((b["buttons"][0] for b in button_blocks if "Cancel" in b["buttons"][0].get("text", "")), None)
+        cancel_btn = next((b["buttons"][0] for b in button_blocks if to_small_caps("cancel") in b["buttons"][0].get("text", "")), None)
         self.assertIsNotNone(cancel_btn)
 
         cancel_msg = build_cancel_rich_ui("Searching...", "req_123", 12345)
@@ -145,7 +145,7 @@ class TestRichMessages(unittest.TestCase):
         c_blocks = cancel_msg.get("blocks", [])
         c_btn_block = next((b for b in c_blocks if b.get("type") == "buttons"), None)
         self.assertIsNotNone(c_btn_block)
-        self.assertIn("Cancel", c_btn_block["buttons"][0]["text"])
+        self.assertIn(to_small_caps("cancel"), c_btn_block["buttons"][0]["text"])
 
 
     def test_button_persistence_rule_across_all_views(self):
@@ -167,14 +167,14 @@ class TestRichMessages(unittest.TestCase):
         paused_ui = build_player_rich_ui(self.state, self.queue)
         paused_btns = [btn for b in paused_ui["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(paused_btns), 4)
-        self.assertEqual(paused_btns[1]["text"], "▶ Play")
+        self.assertEqual(paused_btns[1]["text"], "▶ " + to_small_caps("play"))
 
         self.state.resume()
         self.state.skip_votes = {111, 222}
         vote_ui = build_player_rich_ui(self.state, self.queue)
         vote_btns = [btn for b in vote_ui["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(vote_btns), 4)
-        self.assertEqual(vote_btns[3]["text"], "» Skip (2/3)")
+        self.assertEqual(vote_btns[3]["text"], "» " + to_small_caps("skip") + " (2/3)")
 
         # Playback ended (no track)
         self.state.stop()
@@ -186,12 +186,12 @@ class TestRichMessages(unittest.TestCase):
         queue_active = build_queue_rich_message(self.state, self.queue, is_closed=False)
         q_act_btns = [btn for b in queue_active["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(q_act_btns), 5)
-        self.assertEqual(q_act_btns[4]["text"], "■ Close")
+        self.assertEqual(q_act_btns[4]["text"], "■ " + to_small_caps("close"))
 
         queue_closed = build_queue_rich_message(self.state, self.queue, is_closed=True)
         q_cls_btns = [btn for b in queue_closed["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(q_cls_btns), 5)
-        self.assertEqual(q_cls_btns[4]["text"], "■ Closed")
+        self.assertEqual(q_cls_btns[4]["text"], "■ " + to_small_caps("closed"))
 
         # 3. Search Button Persistence: Normal, Selected, Pagination, Closed
         tracks = [self.track] * 7
@@ -203,23 +203,23 @@ class TestRichMessages(unittest.TestCase):
         search_selected = build_search_rich_ui("Symphony", tracks, page=0, selected_idx=2)
         s_sel_btns = [btn for b in search_selected["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(s_sel_btns), 8)
-        self.assertIn("Selected", s_sel_btns[2]["text"])
+        self.assertIn(to_small_caps("selected"), s_sel_btns[2]["text"])
 
         search_closed = build_search_rich_ui("Symphony", tracks, page=0, is_closed=True)
         s_cls_btns = [btn for b in search_closed["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(s_cls_btns), 8)
-        self.assertEqual(s_cls_btns[7]["text"], "■ Cancelled")
+        self.assertEqual(s_cls_btns[7]["text"], "■ " + to_small_caps("cancelled"))
 
         # 4. Cancel Request Button Persistence: Pending and Cancelled
-        cancel_pending = build_cancel_rich_ui("Title", "req1", 123, button_text="■ Cancel")
+        cancel_pending = build_cancel_rich_ui("Title", "req1", 123, button_text="■ " + to_small_caps("cancel"))
         c_pend_btns = [btn for b in cancel_pending["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(c_pend_btns), 1)
-        self.assertEqual(c_pend_btns[0]["text"], "■ Cancel")
+        self.assertEqual(c_pend_btns[0]["text"], "■ " + to_small_caps("cancel"))
 
-        cancel_done = build_cancel_rich_ui("Title", "req1", 123, button_text="■ Cancelled")
+        cancel_done = build_cancel_rich_ui("Title", "req1", 123, button_text="■ " + to_small_caps("cancelled"))
         c_done_btns = [btn for b in cancel_done["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(c_done_btns), 1)
-        self.assertEqual(c_done_btns[0]["text"], "■ Cancelled")
+        self.assertEqual(c_done_btns[0]["text"], "■ " + to_small_caps("cancelled"))
 
         # 5. Help/Guide Button Persistence: Active and Closed
         help_active = build_start_rich_message("home", is_owner=False)
@@ -229,7 +229,6 @@ class TestRichMessages(unittest.TestCase):
         help_closed = build_start_rich_message("close", is_owner=False)
         h_cls_btns = [btn for b in help_closed["blocks"] if b.get("type") == "buttons" for btn in b["buttons"]]
         self.assertEqual(len(h_act_btns), len(h_cls_btns))
-        from utils.typography import to_small_caps
         self.assertIn(to_small_caps("closed"), h_cls_btns[-1]["text"])
 
 

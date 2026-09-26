@@ -120,6 +120,14 @@ async def process_update(update: Dict[str, Any]) -> None:
                 await cmd.handle_ping(message)
             elif clean_cmd == "stats":
                 await cmd.handle_stats(message)
+            elif clean_cmd == "sysinfo":
+                await cmd.handle_sysinfo(message)
+            elif clean_cmd == "restart":
+                await cmd.handle_restart(message)
+            elif clean_cmd == "ac":
+                await cmd.handle_ac(message)
+            elif clean_cmd == "setbanner":
+                await cmd.handle_setbanner(message, args)
             elif clean_cmd == "shuffle":
                 await cmd.handle_shuffle(message)
             elif clean_cmd == "autoplay":

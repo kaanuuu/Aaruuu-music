@@ -31,9 +31,6 @@ SEARCH_CACHE: Dict[int, List[Any]] = {}
 COMMANDS_REGISTRY: List[Dict[str, str]] = [
     {"command": "play", "description": "Play or queue a song or URL"},
     {"command": "vplay", "description": "Stream video directly in Voice Chat"},
-    {"command": "download", "description": "Download and get MP3 audio or MP4 video file"},
-    {"command": "song", "description": "Search and download an MP3 audio track"},
-    {"command": "video", "description": "Download an MP4 video clip"},
     {"command": "search", "description": "Search songs with 1-5 selection buttons"},
     {"command": "autoplay", "description": "Toggle song recommendation mode (on/off)"},
     {"command": "pause", "description": "Pause current playback"},
@@ -82,13 +79,6 @@ async def handle_start(message: Dict[str, Any], args: str = "") -> None:
                     "type": "heading",
                     "text": to_bold_sans("AARUU MUSIC"),
                     "size": 1,
-                },
-                {
-                    "type": "photo",
-                    "photo": {
-                        "type": "photo",
-                        "media": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
-                    },
                 },
                 {
                     "type": "paragraph",
@@ -531,112 +521,16 @@ async def handle_vplay(message: Dict[str, Any], args_text: str) -> None:
 
 
 async def handle_download(message: Dict[str, Any], args_text: str, is_video: bool = False) -> None:
-    """Handles direct audio or video file downloads sent to Telegram chat: /download <song/video name or URL>."""
+    """Handles direct audio or video file downloads: informs users the feature is removed."""
     chat_id = message["chat"]["id"]
     reply_to_id = message.get("message_id")
-    clean_query = args_text.strip()
-
-    if not clean_query:
-        cmd_name = "/video" if is_video else "/download"
-        await bot_api_client.send_message(
-            chat_id,
-            f"⬇️ {to_bold_sans('DOWNLOAD USAGE')}: {cmd_name} <song or video name or link>\n"
-            f"💡 {to_small_caps('audio example')}: /download barsaat banjaare\n"
-            f"💡 {to_small_caps('video example')}: /video Alan Walker Faded",
-            reply_to_message_id=reply_to_id,
-        )
-        return
-
-    # Send initial status message
-    icon = "🎬" if is_video else "🎵"
-    status_msg = await bot_api_client.send_message(
+    await bot_api_client.send_message(
         chat_id,
-        f"{icon} {to_small_caps('searching and downloading')} \"{sanitize_text(clean_query, 40)}\"...",
+        f"⚠️ {to_bold_sans('DOWNLOAD DISABLED')}\n\n"
+        f"The download option has been removed from this bot.\n"
+        f"Please use /play to stream high-quality music or /vplay to stream video directly in the Voice Chat! 🎵",
         reply_to_message_id=reply_to_id,
     )
-    status_id = status_msg.get("result", {}).get("message_id")
-
-    from_user = message.get("from", {})
-    user_id = from_user.get("id", 0)
-    first_name = from_user.get("first_name", "User")
-
-    # Extract track metadata and stream
-    if is_video:
-        track = await extractor.extract_video(clean_query, user_id, first_name)
-    else:
-        track = await extractor.extract(clean_query, user_id, first_name)
-
-    if not track:
-        err_txt = f"❌ {to_small_caps('could not find media for:')} \"{sanitize_text(clean_query, 35)}\""
-        if status_id:
-            await bot_api_client.edit_message_text(chat_id, status_id, err_txt)
-        else:
-            await bot_api_client.send_message(chat_id, err_txt, reply_to_message_id=reply_to_id)
-        return
-
-    # Edit status message to downloading
-    dur_str = format_time(track.duration) if track.duration else "Live"
-    dl_status_text = (
-        f"{icon} <b>{escape_html(track.title)}</b> ({dur_str})\n"
-        f"👤 {escape_html(track.artist)}\n"
-        f"⬇️ {to_small_caps('downloading & uploading file to telegram')}..."
-    )
-    if status_id:
-        await bot_api_client.edit_message_text(chat_id, status_id, dl_status_text, parse_mode="HTML")
-
-    # Ensure track is downloaded to local file
-    download_ok = await extractor.download_track(track)
-    local_path = track.playable_source
-
-    if not download_ok or not local_path or not os.path.exists(local_path):
-        err_txt = f"❌ {to_small_caps('download failed for:')} \"{sanitize_text(track.title, 35)}\""
-        if status_id:
-            await bot_api_client.edit_message_text(chat_id, status_id, err_txt)
-        else:
-            await bot_api_client.send_message(chat_id, err_txt, reply_to_message_id=reply_to_id)
-        return
-
-    # Send audio or video file directly to chat
-    caption = (
-        f"{icon} <b>{escape_html(track.title)}</b>\n"
-        f"👤 <i>{escape_html(track.artist)}</i>\n"
-        f"⏱ Duration: {dur_str}\n"
-        f"⚡ Downloaded via @Aaruu_musicbot"
-    )
-
-    if is_video or track.media_type == "video" or local_path.endswith((".mp4", ".mkv", ".webm")):
-        res = await bot_api_client.send_video(
-            chat_id=chat_id,
-            video_path_or_url=local_path,
-            caption=caption,
-            duration=track.duration,
-            reply_to_message_id=reply_to_id,
-        )
-    else:
-        res = await bot_api_client.send_audio(
-            chat_id=chat_id,
-            audio_path_or_url=local_path,
-            caption=caption,
-            title=track.title,
-            performer=track.artist,
-            duration=track.duration,
-            reply_to_message_id=reply_to_id,
-        )
-
-    # Delete status message once file is sent
-    if status_id:
-        try:
-            await bot_api_client.delete_message(chat_id, status_id)
-        except Exception:
-            pass
-
-    if not res.get("ok"):
-        logger.warning("Download delivery failed: %s", str(res))
-        await bot_api_client.send_message(
-            chat_id,
-            f"⚠️ {to_small_caps('failed to send downloaded file to telegram')}: {res.get('description', 'Unknown error')}",
-            reply_to_message_id=reply_to_id,
-        )
 
 
 async def handle_pause(message: Dict[str, Any]) -> None:
@@ -1320,4 +1214,115 @@ async def handle_autoplay(message: Dict[str, Any], args_text: str = "") -> None:
     await bot_api_client.send_message(
         chat_id, msg_text, parse_mode="HTML", reply_to_message_id=reply_to_id
     )
+
+
+async def handle_sysinfo(message: Dict[str, Any]) -> None:
+    """Displays server system metrics (Owner only, DM only)."""
+    chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
+    if not is_sudo(from_id):
+        await bot_api_client.send_message(chat_id, "⛔ " + to_small_caps("only bot owner can use this command."))
+        return
+    if chat_id < 0:
+        await bot_api_client.send_message(chat_id, "⚠️ " + to_small_caps("this command is only allowed in private message (dm) of the bot."))
+        return
+    try:
+        import psutil
+        import platform
+        cpu = psutil.cpu_percent()
+        ram = psutil.virtual_memory().percent
+        disk = psutil.disk_usage('/').percent
+        text = (
+            f"🖥️ {to_bold_sans('SYSTEM METRICS')}\n\n"
+            f"💻 {to_small_caps('os')}: {platform.system()} {platform.release()}\n"
+            f"⚙️ {to_small_caps('cpu usage')}: {cpu}%\n"
+            f"💾 {to_small_caps('ram usage')}: {ram}%\n"
+            f"💽 {to_small_caps('disk usage')}: {disk}%\n"
+            f"🐍 {to_small_caps('python version')}: {platform.python_version()}\n"
+            f"🔌 {to_small_caps('active workers')}: {to_small_caps('1 healthy process')}"
+        )
+        await bot_api_client.send_message(chat_id, text)
+    except Exception as e:
+        await bot_api_client.send_message(chat_id, f"❌ Failed to fetch sysinfo: {str(e)}")
+
+
+async def handle_restart(message: Dict[str, Any]) -> None:
+    """Gracefully reloads the worker process (Owner only, DM only)."""
+    chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
+    if not is_sudo(from_id):
+        await bot_api_client.send_message(chat_id, "⛔ " + to_small_caps("only bot owner can use this command."))
+        return
+    if chat_id < 0:
+        await bot_api_client.send_message(chat_id, "⚠️ " + to_small_caps("this command is only allowed in private message (dm) of the bot."))
+        return
+    await bot_api_client.send_message(chat_id, "🔄 " + to_small_caps("restarting bot process..."))
+    import os
+    import sys
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+
+async def handle_ac(message: Dict[str, Any]) -> None:
+    """Informs owner about registered groups and current active playback streams (Owner only)."""
+    chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
+    if not is_sudo(from_id):
+        await bot_api_client.send_message(chat_id, "⛔ " + to_small_caps("only bot owner can use this command."))
+        return
+    stats = await db.get_stats()
+    active_streams = sum(1 for state in player_manager._states.values() if state.is_playing)
+    text = (
+        f"📊 {to_bold_sans('ACTIVE STREAM STATS')}\n\n"
+        f"💬 {to_small_caps('total registered groups')}: {stats.get('groups', 0)}\n"
+        f"📻 {to_small_caps('currently streaming in')}: {active_streams} {to_small_caps('groups')}"
+    )
+    await bot_api_client.send_message(chat_id, text)
+
+
+async def handle_setbanner(message: Dict[str, Any], args: str) -> None:
+    """Updates custom banners for different sections of the help guide (Owner only, DM only)."""
+    chat_id = message["chat"]["id"]
+    from_id = message.get("from", {}).get("id", 0)
+    if not is_sudo(from_id):
+        await bot_api_client.send_message(chat_id, "⛔ " + to_small_caps("only bot owner can use this command."))
+        return
+    if chat_id < 0:
+        await bot_api_client.send_message(chat_id, "⚠️ " + to_small_caps("this command is only allowed in private message (dm) of the bot."))
+        return
+    clean_args = args.strip().split(maxsplit=1)
+    if len(clean_args) < 2:
+        await bot_api_client.send_message(
+            chat_id,
+            f"🖼️ {to_bold_sans('SETBANNER USAGE')}:\n"
+            f"<code>/setbanner <section> <image_url></code>\n\n"
+            f"📝 {to_small_caps('valid sections')}:\n"
+            f"• <code>home</code>\n• <code>getting_started</code>\n• <code>find_play</code>\n• <code>all_commands</code>\n"
+            f"• <code>controls</code>\n• <code>queue_repeat</code>\n• <code>group_settings</code>\n• <code>group_admins</code>\n"
+            f"• <code>troubleshooting</code>\n• <code>owner_sudo</code>",
+            parse_mode="HTML"
+        )
+        return
+    section = clean_args[0].lower().strip()
+    url = clean_args[1].strip()
+    VALID_SECTIONS = {"home", "getting_started", "find_play", "all_commands", "controls", "queue_repeat", "group_settings", "group_admins", "troubleshooting", "owner_sudo"}
+    if section not in VALID_SECTIONS:
+        await bot_api_client.send_message(
+            chat_id,
+            f"❌ {to_small_caps('invalid section:')} <code>{section}</code>\n"
+            f"Please use one of the valid guide sections.",
+            parse_mode="HTML"
+        )
+        return
+    if not url.startswith(("http://", "https://")):
+        await bot_api_client.send_message(chat_id, f"❌ {to_small_caps('invalid url format. must start with http/https.')}")
+        return
+    await db.set_banner(section, url)
+    await bot_api_client.send_message(
+        chat_id,
+        f"✅ {to_bold_sans('BANNER UPDATED SUCCESS')}\n\n"
+        f"📂 {to_small_caps('section')}: <code>{section}</code>\n"
+        f"🖼️ {to_small_caps('url')}: {url}",
+        parse_mode="HTML"
+    )
+
 
