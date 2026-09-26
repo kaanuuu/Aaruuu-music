@@ -1446,21 +1446,10 @@ class MediaExtractor:
             logger.debug("YouTubeProvider stream resolution exception: %s", str(e))
 
         if resolved_track and resolved_track.stream_url:
-            ext = "mp4" if is_video else ("webm" if "webm" in resolved_track.stream_url else "m4a")
-            dest_file = os.path.join(cache_dir, f"{video_id}.{ext}")
-            success = await loop.run_in_executor(None, self._download_direct_url, resolved_track.stream_url, dest_file)
-            if success and os.path.exists(dest_file) and os.path.getsize(dest_file) > 0:
-                sz = os.path.getsize(dest_file)
-                logger.info(
-                    "[YTDLP] download_success track_id=%s source=%s cookies_configured=%s cache_hit=no file_exists=true file_size=%d path=%s",
-                    video_id,
-                    "youtube",
-                    "yes" if has_cookies else "no",
-                    sz,
-                    dest_file,
-                )
-                self._clean_cache_dir(cache_dir)
-                return dest_file
+            # Instant playback mode: return the stream_url directly to play instantly!
+            track.stream_url = resolved_track.stream_url
+            logger.info("[YTDLP] Instant direct stream playback initiated for track_id=%s", video_id)
+            return resolved_track.stream_url
 
         # 2. Fallback to local yt-dlp download if direct stream resolution/download failed or was blocked
         logger.info("[YTDLP] Direct stream extraction failed or was blocked. Retrying local downloader fallback...")
@@ -1542,4 +1531,6 @@ class MediaExtractor:
         """Downloads a track's media to local cache file for PyTgCalls playback."""
         is_vid = getattr(track, "is_video", False)
         path = await self.prepare_track(track, is_video=is_vid)
+        if path and path.startswith(("http://", "https://")):
+            return True
         return bool(path and os.path.exists(path) and os.path.getsize(path) > 0)
