@@ -18,9 +18,9 @@ class Config:
         self.QUEUE_LIMIT = int(getenv("QUEUE_LIMIT", 20))
         self.PLAYLIST_LIMIT = int(getenv("PLAYLIST_LIMIT", 20))
 
-        self.SESSION1 = getenv("SESSION", None)
-        self.SESSION2 = getenv("SESSION2", None)
-        self.SESSION3 = getenv("SESSION3", None)
+        self.SESSION1 = getenv("SESSION1") or getenv("SESSION") or getenv("STRING_SESSION") or getenv("STRING_SESSION1") or None
+        self.SESSION2 = getenv("SESSION2") or getenv("STRING_SESSION2") or None
+        self.SESSION3 = getenv("SESSION3") or getenv("STRING_SESSION3") or None
 
         self.SUPPORT_CHANNEL = getenv("SUPPORT_CHANNEL", "https://t.me/fallenx")
         self.SUPPORT_CHAT = getenv("SUPPORT_CHAT", "https://t.me/DevilsHeavenMF")
