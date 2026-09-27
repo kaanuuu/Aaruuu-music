@@ -1,0 +1,996 @@
+"""
+Aaruu Music - Voice Chat Integration
+Isolates Telegram Group Voice Chat (VC) streaming logic via PyTgCalls / Pyrogram.
+Supports PyTgCalls v1 and v2 APIs for live WebRTC VC audio streaming.
+If ASSISTANT_SESSION (or STRING_SESSION + API_ID + API_HASH) is configured, streams live audio.
+If not configured, operates in standalone Rich Message UI & queue management mode.
+"""
+
+import asyncio
+import base64
+import os
+import struct
+from typing import Any, Dict, Optional
+from utils.logging import logger
+
+# Standard PyTgCalls and Pyrogram imports
+PYTGCALLS_AVAILABLE = False
+Client = None
+PyTgCalls = None
+AudioPiped = None
+MediaStream = None
+pyrogram = None
+pytgcalls = None
+
+try:
+    import pyrogram
+    import pytgcalls
+    from pyrogram import Client
+    from pytgcalls import PyTgCalls
+
+    # Try importing PyTgCalls v1 AudioPiped
+    try:
+        from pytgcalls.types import AudioPiped
+    except ImportError:
+        AudioPiped = None
+
+    # Try importing PyTgCalls v2 MediaStream
+    try:
+        from pytgcalls.types import MediaStream
+    except ImportError:
+        MediaStream = None
+
+    PYTGCALLS_AVAILABLE = True
+except Exception as _pytg_err:
+    logger.debug("PyTgCalls import warning: %s", str(_pytg_err))
+    PYTGCALLS_AVAILABLE = False
+
+
+def sanitize_and_prepare_session(session_str: str, api_id: int = 6) -> str:
+    """
+    Sanitizes string session:
+    1. Strips leading/trailing whitespace, newlines, and quotes (' or ").
+    2. Fixes base64 padding.
+    3. Auto-converts older Pyrogram formats (262, 263, 266, 267 bytes) into Pyrogram v2 (271 bytes: >BI?256sQ?)
+       by injecting the 4-byte API ID into the binary structure so Pyrogram v2 unpack never errors out.
+    """
+    if not session_str:
+        return ""
+
+    cleaned = session_str.strip().strip("'\"").strip()
+    if not cleaned:
+        return ""
+
+    # Fix base64 padding if stripped during copy-paste
+    rem = len(cleaned) % 4
+    if rem:
+        cleaned += "=" * (4 - rem)
+
+    try:
+        try:
+            raw = base64.urlsafe_b64decode(cleaned)
+        except Exception:
+            raw = base64.b64decode(cleaned)
+
+        raw_len = len(raw)
+
+        # Already valid Pyrogram v2 structure (271 bytes: >BI?256sQ?)
+        if raw_len == 271:
+            return cleaned
+
+        # Pyrogram v1 with 64-bit user id (267 bytes: >B?256sQ?)
+        if raw_len == 267:
+            dc_id, test_mode, auth_key, user_id, is_bot = struct.unpack(">B?256sQ?", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, is_bot)
+            logger.info("Voice Chat: Auto-converted 267-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+        # Pyrogram v1 standard (263 bytes: >B?256sI?)
+        if raw_len == 263:
+            dc_id, test_mode, auth_key, user_id, is_bot = struct.unpack(">B?256sI?", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, is_bot)
+            logger.info("Voice Chat: Auto-converted 263-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+        # Pyrogram v1 compact (262 bytes: >B?256sI)
+        if raw_len == 262:
+            dc_id, test_mode, auth_key, user_id = struct.unpack(">B?256sI", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, False)
+            logger.info("Voice Chat: Auto-converted 262-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+        # Pyrogram v1 64-bit compact (266 bytes: >B?256sQ)
+        if raw_len == 266:
+            dc_id, test_mode, auth_key, user_id = struct.unpack(">B?256sQ", raw)
+            converted = struct.pack(">BI?256sQ?", dc_id, api_id, test_mode, auth_key, user_id, False)
+            logger.info("Voice Chat: Auto-converted 266-byte session into Pyrogram v2 (271 bytes).")
+            return base64.urlsafe_b64encode(converted).decode().rstrip("=")
+
+    except Exception as e:
+        logger.debug("Session string format probe error: %s", str(e))
+
+    return cleaned
+
+
+async def verify_media_file_with_ffmpeg(path_or_url: str) -> tuple[bool, str]:
+    """
+    Verifies if FFmpeg can successfully decode the media file or stream.
+    Strictly validates source type: only LOCAL_FILE and DIRECT_HTTP_MEDIA are allowed.
+    Rejects raw YouTube watch URLs and unknown sources immediately.
+    Runs a fast test: ffmpeg -ss 00:00:00 -t 1 -i <file/URL> -f null -
+    Returns (success, log_or_error_message).
+    """
+    import asyncio
+    import os
+    import shutil
+
+    if not path_or_url or not isinstance(path_or_url, str):
+        return False, "Invalid or missing media path/URL."
+
+    from player.models import classify_media_source
+
+    source_type = classify_media_source(path_or_url)
+    if source_type not in ("LOCAL_FILE", "DIRECT_HTTP_MEDIA"):
+        return (
+            False,
+            f"[FFMPEG VALIDATOR] Rejected source '{path_or_url}' (classified as {source_type}). "
+            f"Only LOCAL_FILE and DIRECT_HTTP_MEDIA can be decoded by FFmpeg."
+        )
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return False, "FFmpeg binary is not found on the system path."
+
+    is_http = source_type == "DIRECT_HTTP_MEDIA"
+    if not is_http:
+        if not os.path.exists(path_or_url):
+            return False, f"Local file does not exist: {path_or_url}"
+        if os.path.getsize(path_or_url) == 0:
+            return False, f"Local file is empty: {path_or_url}"
+
+    try:
+        # Build command. For HTTP streams, we can add User-Agent & Referer headers to match playback
+        cmd = ["ffmpeg", "-y"]
+        if is_http:
+            # Match the headers and reconnect parameters used in PyTgCalls
+            cmd.extend([
+                "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://www.jiosaavn.com/\r\n",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5"
+            ])
+        
+        cmd.extend([
+            "-ss", "00:00:00",
+            "-t", "1",
+            "-i", path_or_url,
+            "-f", "null",
+            "-"
+        ])
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            stderr_decoded = stderr.decode(errors="ignore")
+            if proc.returncode == 0:
+                return True, "FFmpeg successfully validated the audio stream/file decoding."
+            else:
+                err_lines = stderr_decoded.splitlines()[-10:]
+                return False, f"FFmpeg validation failed (code {proc.returncode}). Errors:\n" + "\n".join(err_lines)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return False, "FFmpeg validation timed out after 5 seconds."
+    except Exception as e:
+        return False, f"Error spawning FFmpeg verification: {str(e)}"
+
+
+class VoiceChatAssistant:
+    """Manages Telegram Group Voice Chat (VC) audio streaming via PyTgCalls / Pyrogram."""
+
+    def __init__(self):
+        raw_session = (
+            os.getenv("STRING_SESSION") or os.getenv("ASSISTANT_SESSION") or ""
+        )
+        self.api_id: Optional[str] = os.getenv("API_ID")
+        self.api_hash: Optional[str] = os.getenv("API_HASH")
+
+        parsed_api_id = (
+            int(self.api_id) if self.api_id and str(self.api_id).isdigit() else 6
+        )
+        self.session_string: Optional[str] = sanitize_and_prepare_session(
+            raw_session, parsed_api_id
+        )
+
+        self.is_configured: bool = bool(
+            self.session_string and self.session_string.strip()
+        )
+        self.app: Optional[Any] = None
+        self.pytgcalls: Optional[Any] = None
+        self.active_chats: Dict[int, Any] = {}
+        self.chat_errors: Dict[int, Optional[str]] = {}
+        self.last_error: Optional[str] = None
+        self._resolved_peers: set = set()
+        # FFmpeg validation is expensive; cache successful local-file checks by path/size/mtime.
+        self._validated_media: Dict[str, tuple] = {}
+        self.assistant_id: Optional[int] = None
+        self.assistant_username: Optional[str] = None
+        self.assistant_name: Optional[str] = None
+        self.is_connected: bool = False
+
+    def get_last_error(self, chat_id: int) -> Optional[str]:
+        """Returns the isolated last error message for a specific chat."""
+        return self.chat_errors.get(chat_id) or self.last_error
+
+    def check_status(self) -> Dict[str, Any]:
+        """Returns assistant status without exposing secrets."""
+        return {
+            "configured": self.is_configured,
+            "connected": self.is_connected,
+            "assistant_id": self.assistant_id,
+            "assistant_username": self.assistant_username,
+            "pytgcalls_installed": PYTGCALLS_AVAILABLE,
+            "mode": (
+                "PyTgCalls VC Streaming"
+                if (self.is_connected and self.pytgcalls)
+                else "Bot API (Rich Message UI Mode)"
+            ),
+            "streaming_available": bool(self.is_connected and self.pytgcalls),
+        }
+
+    async def start(self) -> None:
+        """Initializes Pyrogram userbot client and PyTgCalls listener if session provided."""
+        if not self.is_configured:
+            logger.info(
+                "Voice Chat: STRING_SESSION / ASSISTANT_SESSION not set. Operating in standalone Bot API UI mode."
+            )
+            return
+
+        if not PYTGCALLS_AVAILABLE:
+            logger.warning(
+                "Voice Chat: pyrogram / pytgcalls libraries not loaded. Operating in standalone Bot API UI mode."
+            )
+            return
+
+        try:
+            logger.info("Voice Chat: Initializing Pyrogram & PyTgCalls VC Assistant...")
+            self.app = Client(
+                "AaruuAssistant",
+                api_id=int(self.api_id) if self.api_id and str(self.api_id).isdigit() else 6,
+                api_hash=self.api_hash or "eb06d4abfb49dc3eeb1aeb98ae0f581e",
+                session_string=self.session_string,
+            )
+
+            # Register real-time update listener so Pyrogram constantly caches peer access_hashes
+            @self.app.on_message()
+            async def _auto_peer_cache_handler(client, message):
+                pass
+
+            await self.app.start()
+            try:
+                me = await self.app.get_me()
+                self.assistant_id = me.id
+                self.assistant_username = me.username or ""
+                self.assistant_name = me.first_name or "Assistant"
+                self.is_connected = True
+                logger.info(
+                    "Voice Chat: Assistant connected as @%s (ID: %s, Name: %s)",
+                    self.assistant_username,
+                    self.assistant_id,
+                    self.assistant_name,
+                )
+                # Comprehensive pre-caching of assistant's dialogs and access hashes
+                try:
+                    logger.info("Voice Chat: Pre-caching assistant dialogs and access hashes...")
+                    async for dialog in self.app.get_dialogs():
+                        if dialog.chat:
+                            self._resolved_peers.add(dialog.chat.id)
+                    logger.info("Voice Chat: Assistant dialogs pre-cached successfully. Cached %s resolved peers.", len(self._resolved_peers))
+                except Exception as d_err:
+                    logger.debug("Voice Chat: Dialog pre-caching note: %s", str(d_err))
+            except Exception as e:
+                logger.warning("Voice Chat: Could not fetch assistant profile: %s", str(e))
+                self.is_connected = True
+
+            try:
+                self.pytgcalls = PyTgCalls(self.app)
+
+                if hasattr(self.pytgcalls, "on_stream_end"):
+                    @self.pytgcalls.on_stream_end()
+                    async def _stream_end_handler(client, update):
+                        try:
+                            chat_id = getattr(update, "chat_id", None)
+                            if not chat_id and hasattr(update, "call"):
+                                chat_id = getattr(update.call, "chat_id", None)
+                            if chat_id:
+                                logger.info("Voice Chat: Stream ended in chat %s. Auto-advancing...", chat_id)
+                                from player.manager import player_manager
+                                await player_manager.auto_advance(chat_id)
+                        except Exception as se_err:
+                            logger.debug("Voice Chat stream end handler note: %s", str(se_err))
+
+                if hasattr(self.pytgcalls, "on_update"):
+                    @self.pytgcalls.on_update()
+                    async def _stream_update_handler(client, update):
+                        try:
+                            up_type = type(update).__name__
+                            if any(k in up_type for k in ("StreamEnded", "StreamAudioEnded", "StreamVideoEnded", "CallEnded")):
+                                chat_id = getattr(update, "chat_id", None)
+                                if not chat_id and hasattr(update, "call"):
+                                    chat_id = getattr(update.call, "chat_id", None)
+                                if chat_id:
+                                    logger.info("Voice Chat: %s in chat %s. Auto-advancing...", up_type, chat_id)
+                                    from player.manager import player_manager
+                                    await player_manager.auto_advance(chat_id)
+                        except Exception:
+                            pass
+
+                await self.pytgcalls.start()
+                logger.info("Voice Chat: PyTgCalls VC assistant connected successfully!")
+            except Exception as vc_err:
+                logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", str(vc_err))
+                self.pytgcalls = None
+        except Exception as e:
+            err_msg = str(e)
+            if "271 bytes" in err_msg or "unpack" in err_msg:
+                logger.warning(
+                    "Voice Chat: Provided STRING_SESSION format is incompatible with Pyrogram v2 (was generated using Telethon or Pyrogram v1). Please generate a Pyrogram v2 session string for VC live audio. Operating seamlessly in High-Speed Rich UI mode."
+                )
+            else:
+                logger.error("Voice Chat: Failed to initialize PyTgCalls assistant: %s", err_msg)
+
+    async def resolve_and_cache_peer(
+        self,
+        chat_id: int,
+        chat_username: Optional[str] = None,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> bool:
+        """
+        Ensures that the assistant client has resolved the chat/channel peer and access_hash
+        using official Pyrogram resolution mechanisms. Works for regular members without requiring admin status.
+        """
+        if not self.app or not self.is_connected:
+            return False
+
+        # Fast path: the peer has already been resolved in this process.
+        if chat_id in self._resolved_peers:
+            return True
+
+        # 1. Direct native Pyrogram get_chat (cheap and authoritative).
+        try:
+            chat = await self.app.get_chat(chat_id)
+            if chat:
+                self._resolved_peers.add(chat_id)
+                return True
+        except Exception as e:
+            logger.debug("Voice Chat: get_chat(%s) note: %s", chat_id, str(e))
+
+        # 2. Public username fallback.
+        if chat_username and isinstance(chat_username, str):
+            clean_un = chat_username.replace("@", "").strip()
+            if clean_un:
+                try:
+                    chat = await self.app.get_chat(clean_un)
+                    if chat:
+                        self._resolved_peers.add(chat_id)
+                        return True
+                except Exception as un_err:
+                    logger.debug("Voice Chat: get_chat(@%s) note: %s", clean_un, str(un_err))
+
+        # 3. Resolve the peer directly. Avoid scanning every dialog on every /play;
+        # that can be very slow for accounts with large dialog lists.
+        try:
+            peer = await self.app.resolve_peer(chat_id)
+            if peer:
+                self._resolved_peers.add(chat_id)
+                return True
+        except Exception as res_err:
+            logger.debug("Voice Chat: resolve_peer(%s) note: %s", chat_id, str(res_err))
+
+        # 4. Last-resort dialog scan only when direct resolution failed.
+        try:
+            async for dialog in self.app.get_dialogs(folder_id=0):
+                if dialog.chat and dialog.chat.id == chat_id:
+                    self._resolved_peers.add(chat_id)
+                    return True
+        except Exception as d_err:
+            logger.debug("Voice Chat: fallback get_dialogs note: %s", str(d_err))
+
+        return False
+
+    async def is_member_of_chat(
+        self,
+        chat_id: int,
+        chat_username: Optional[str] = None,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> bool:
+        """
+        Checks if the assistant userbot is present as a member in the specified chat.
+        Works as a regular member without admin permissions.
+        """
+        if chat_id in self._resolved_peers:
+            return True
+        if not self.app or not self.is_connected:
+            return False
+        return await self.resolve_and_cache_peer(
+            chat_id, chat_username=chat_username, chat_title=chat_title, chat_type=chat_type
+        )
+
+    async def join_chat(self, chat_id_or_invite_link: Any) -> bool:
+        """Attempts to join a group using invite link or chat ID."""
+        if not self.app or not self.is_connected:
+            return False
+        try:
+            chat = await self.app.join_chat(chat_id_or_invite_link)
+            logger.info("Voice Chat: Assistant successfully joined chat %s", chat_id_or_invite_link)
+            try:
+                await self.app.get_chat(chat.id)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            err_str = str(e)
+            if "USER_ALREADY_PARTICIPANT" in err_str:
+                logger.info("Voice Chat: Assistant is already a participant of %s", chat_id_or_invite_link)
+                try:
+                    await self.app.get_chat(chat_id_or_invite_link)
+                except Exception:
+                    pass
+                return True
+            logger.warning(
+                "Voice Chat: Assistant failed to join chat %s: %s",
+                chat_id_or_invite_link,
+                err_str,
+            )
+            return False
+
+    async def is_call_active(self, chat_id: int) -> bool:
+        """Checks if there is an active PyTgCalls call session for the given chat_id."""
+        if not self.pytgcalls:
+            return False
+        import inspect
+
+        # 1. Authoritative per-chat tracker check
+        if chat_id in self.active_chats:
+            return True
+
+        # 2. PyTgCalls active_calls check
+        try:
+            if hasattr(self.pytgcalls, "active_calls"):
+                calls = getattr(self.pytgcalls, "active_calls")
+                if callable(calls):
+                    calls = calls()
+                if inspect.isawaitable(calls):
+                    calls = await calls
+                if calls:
+                    if hasattr(calls, "__contains__") and chat_id in calls:
+                        return True
+                    if isinstance(calls, (list, tuple, set)):
+                        for c in calls:
+                            if getattr(c, "chat_id", None) == chat_id:
+                                return True
+        except Exception:
+            pass
+
+        # 3. PyTgCalls calls / CallHolder check
+        try:
+            if hasattr(self.pytgcalls, "calls"):
+                calls_attr = getattr(self.pytgcalls, "calls")
+                if callable(calls_attr):
+                    calls_attr = calls_attr()
+                if inspect.isawaitable(calls_attr):
+                    calls_attr = await calls_attr
+                if calls_attr:
+                    if hasattr(calls_attr, "get_call"):
+                        gc = calls_attr.get_call(chat_id)
+                        if inspect.isawaitable(gc):
+                            gc = await gc
+                        if gc:
+                            return True
+                    if hasattr(calls_attr, "get"):
+                        gc = calls_attr.get(chat_id)
+                        if inspect.isawaitable(gc):
+                            gc = await gc
+                        if gc:
+                            return True
+                    if hasattr(calls_attr, "calls"):
+                        raw_c = getattr(calls_attr, "calls")
+                        if callable(raw_c):
+                            raw_c = raw_c()
+                        if inspect.isawaitable(raw_c):
+                            raw_c = await raw_c
+                        if raw_c:
+                            if isinstance(raw_c, (list, tuple, set)):
+                                for c in raw_c:
+                                    if getattr(c, "chat_id", None) == chat_id:
+                                        return True
+                            elif isinstance(raw_c, dict) and chat_id in raw_c:
+                                return True
+                    if isinstance(calls_attr, (list, tuple, set)):
+                        for c in calls_attr:
+                            if getattr(c, "chat_id", None) == chat_id:
+                                return True
+                    elif isinstance(calls_attr, dict) and chat_id in calls_attr:
+                        return True
+        except Exception:
+            pass
+
+        return False
+
+    async def _log_channel_invalid_diagnostics(
+        self,
+        chat_id: int,
+        original_err: Exception,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> None:
+        """Logs comprehensive per-group diagnostic details upon encountering CHANNEL_INVALID."""
+        can_resolve = False
+        resolved_peer_type = "unresolved"
+        vc_active = False
+
+        if self.app and self.is_connected:
+            try:
+                peer = await self.app.resolve_peer(chat_id)
+                if peer:
+                    can_resolve = True
+                    resolved_peer_type = type(peer).__name__
+            except Exception as res_e:
+                resolved_peer_type = f"Failed: {str(res_e)}"
+
+            try:
+                chat_obj = await self.app.get_chat(chat_id)
+                if chat_obj:
+                    can_resolve = True
+                    if not chat_title:
+                        chat_title = getattr(chat_obj, "title", None) or getattr(chat_obj, "first_name", None)
+                    if not chat_type:
+                        chat_type = str(getattr(chat_obj, "type", "unknown"))
+            except Exception:
+                pass
+
+        vc_active = await self.is_call_active(chat_id)
+
+        logger.error(
+            "[CHANNEL_INVALID DIAGNOSTICS]\n"
+            "• Current Chat ID: %s\n"
+            "• Chat Type: %s\n"
+            "• Chat Title: %s\n"
+            "• Assistant User ID: %s (@%s)\n"
+            "• Assistant Can Resolve Chat: %s (Peer: %s)\n"
+            "• Voice Chat Active: %s\n"
+            "• Underlying Error: %s",
+            chat_id,
+            chat_type or "supergroup/group",
+            chat_title or "Unknown",
+            self.assistant_id,
+            self.assistant_username or "N/A",
+            can_resolve,
+            resolved_peer_type,
+            vc_active,
+            str(original_err),
+        )
+
+    async def play_audio(
+        self,
+        chat_id: int,
+        audio_source: str,
+        seek_seconds: float = 0.0,
+        is_video: bool = False,
+        chat_username: Optional[str] = None,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> bool:
+        """Streams audio_source or video into the group voice chat call for the specific chat_id."""
+        if not audio_source or not isinstance(audio_source, str):
+            err_msg = "No playable audio source or downloaded file available for streaming."
+            self.last_error = err_msg
+            self.chat_errors[chat_id] = err_msg
+            logger.warning("Voice Chat: Cannot play audio in chat %s: %s", chat_id, err_msg)
+            return False
+
+        if self.pytgcalls and self.is_connected:
+            try:
+                playable_stream = audio_source
+
+                # Fast peer verification & access hash caching for CURRENT group before PyTgCalls call
+                await self.resolve_and_cache_peer(
+                    chat_id, chat_username=chat_username, chat_title=chat_title, chat_type=chat_type
+                )
+
+                # Pipeline Diagnostics & Logs
+                is_http = playable_stream.startswith(("http://", "https://"))
+                import shutil
+                ffmpeg_found = shutil.which("ffmpeg") or "Not found"
+
+                logger.info("[MEDIA-PIPELINE DEBUG] 1. Extracted audio URL/source: %s", playable_stream)
+                logger.info("[MEDIA-PIPELINE DEBUG] 2. Source type: %s", "remote" if is_http else "local")
+                logger.debug("[MEDIA-PIPELINE DEBUG] 3. Source path: %s", playable_stream if not is_http else "remote")
+                logger.debug("[MEDIA-PIPELINE DEBUG] 4. File existence: %s", os.path.exists(playable_stream) if not is_http else "N/A")
+                logger.debug("[MEDIA-PIPELINE DEBUG] 5. File size: %s bytes", os.path.getsize(playable_stream) if not is_http and os.path.exists(playable_stream) else "N/A")
+                logger.debug("[MEDIA-PIPELINE DEBUG] 6. FFmpeg availability: %s", ffmpeg_found)
+
+                # FFmpeg probing can take seconds. Cache successful local-file checks
+                # until the file changes; remote URLs are still validated per playback.
+                should_validate = True
+                validation_key = None
+                if not is_http and os.path.exists(playable_stream):
+                    try:
+                        st = os.stat(playable_stream)
+                        validation_key = f"{playable_stream}:{st.st_size}:{st.st_mtime_ns}"
+                        should_validate = validation_key not in self._validated_media
+                    except OSError:
+                        pass
+
+                if should_validate:
+                    logger.info("[MEDIA-PIPELINE DEBUG] 7. Testing FFmpeg ability to decode the file...")
+                    success, ffmpeg_log = await verify_media_file_with_ffmpeg(playable_stream)
+                    logger.info("[MEDIA-PIPELINE DEBUG] FFmpeg verification result: %s - %s", "SUCCESS" if success else "FAILED", ffmpeg_log)
+                    if not success:
+                        raise RuntimeError(f"FFmpeg decoding test failed: {ffmpeg_log}")
+                    if validation_key:
+                        self._validated_media[validation_key] = (True,)
+                else:
+                    logger.debug("[MEDIA-PIPELINE DEBUG] 7. Skipping cached FFmpeg validation for %s", playable_stream)
+
+                # Construct stream with FFmpeg headers & reconnect flags so HTTP audio CDNs (JioSaavn / YouTube) don't send 403 or silence
+                ffmpeg_params = ""
+                if is_http:
+                    ffmpeg_params += (
+                        "-headers "
+                        "'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://www.jiosaavn.com/\r\n' "
+                        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+                    )
+                if seek_seconds > 0.0:
+                    if ffmpeg_params:
+                        ffmpeg_params += " "
+                    ffmpeg_params += f"-ss {seek_seconds}"
+                
+                def _build_stream(target_url: str):
+                    if not target_url or not isinstance(target_url, str):
+                        return None
+                    is_remote = target_url.startswith(("http://", "https://"))
+                    if is_remote:
+                        params = ffmpeg_params
+                    else:
+                        params = f"-ss {seek_seconds}" if seek_seconds > 0.0 else ""
+                    
+                    if MediaStream:
+                        try:
+                            from pytgcalls.types import AudioQuality
+                            v_params = None
+                            if is_video:
+                                try:
+                                    from pytgcalls.types import VideoQuality
+                                    v_params = getattr(VideoQuality, "HD_720p", None)
+                                except Exception:
+                                    pass
+
+                            kw = {"audio_parameters": AudioQuality.HIGH}
+                            if v_params is not None:
+                                kw["video_parameters"] = v_params
+                            if params:
+                                kw["ffmpeg_parameters"] = params
+
+                            return MediaStream(target_url, **kw)
+                        except Exception:
+                            try:
+                                if params:
+                                    return MediaStream(target_url, ffmpeg_parameters=params)
+                                else:
+                                    return MediaStream(target_url)
+                            except Exception:
+                                pass
+                    if is_video:
+                        try:
+                            from pytgcalls.types import AudioVideoPiped
+                            if AudioVideoPiped:
+                                if params:
+                                    return AudioVideoPiped(target_url, additional_ffmpeg_parameters=params)
+                                return AudioVideoPiped(target_url)
+                        except Exception:
+                            pass
+                    if AudioPiped:
+                        try:
+                            if params:
+                                return AudioPiped(target_url, additional_ffmpeg_parameters=params)
+                            else:
+                                return AudioPiped(target_url)
+                        except Exception:
+                            try:
+                                if params:
+                                    return AudioPiped(target_url, ffmpeg_parameters=params)
+                                else:
+                                    return AudioPiped(target_url)
+                            except Exception:
+                                pass
+                    return target_url
+
+                logger.info("[MEDIA-PIPELINE DEBUG] 8. Creating PyTgCalls media stream object for chat %s...", chat_id)
+                stream_obj = _build_stream(playable_stream)
+                logger.info("[MEDIA-PIPELINE DEBUG] Created media stream object of type: %s", type(stream_obj).__name__)
+
+                # [VC DEBUG] High-value diagnostic logging before PyTgCalls call
+                peer_type = "unknown"
+                peer_raw_id = chat_id
+                if self.app and self.is_connected:
+                    try:
+                        resolved_p = await self.app.resolve_peer(chat_id)
+                        if resolved_p:
+                            peer_type = type(resolved_p).__name__
+                            peer_raw_id = getattr(resolved_p, "channel_id", getattr(resolved_p, "chat_id", getattr(resolved_p, "user_id", chat_id)))
+                    except Exception:
+                        pass
+
+                pytgcalls_ver = getattr(pytgcalls, "__version__", "2.x") if pytgcalls else "unknown"
+                pyrogram_ver = getattr(pyrogram, "__version__", "2.0.106") if pyrogram else "unknown"
+
+                logger.info(
+                    "[VC DEBUG]\n"
+                    "chat_id=%s\n"
+                    "chat_type=%s\n"
+                    "chat_title=%s\n"
+                    "assistant_id=%s\n"
+                    "peer_type=%s\n"
+                    "peer_id=%s\n"
+                    "py-tgcalls-version=%s\n"
+                    "pyrogram-version=%s\n"
+                    "call_instance=%s",
+                    chat_id,
+                    chat_type or "supergroup/group",
+                    chat_title or "Unknown",
+                    self.assistant_id,
+                    peer_type,
+                    peer_raw_id,
+                    pytgcalls_ver,
+                    pyrogram_ver,
+                    id(self.pytgcalls),
+                )
+
+                async def _do_stream():
+                    already_connected = await self.is_call_active(chat_id)
+                    # PyTgCalls v1 API (join_group_call)
+                    if hasattr(self.pytgcalls, "join_group_call"):
+                        if already_connected and hasattr(self.pytgcalls, "change_stream"):
+                            logger.info("[MEDIA-PIPELINE DEBUG] Already connected in PyTgCalls v1 for chat %s. Changing stream...", chat_id)
+                            await self.pytgcalls.change_stream(chat_id, stream_obj)
+                        else:
+                            logger.info("[MEDIA-PIPELINE DEBUG] Invoking PyTgCalls join_group_call() for chat %s", chat_id)
+                            await self.pytgcalls.join_group_call(chat_id, stream_obj)
+
+                    # PyTgCalls v2 API (play)
+                    elif hasattr(self.pytgcalls, "play"):
+                        logger.info("[MEDIA-PIPELINE DEBUG] Invoking PyTgCalls play() for chat %s (already_connected=%s)", chat_id, already_connected)
+                        await self.pytgcalls.play(chat_id, stream_obj)
+
+                    elif hasattr(self.pytgcalls, "join_call"):
+                        logger.info("[MEDIA-PIPELINE DEBUG] Invoking PyTgCalls join_call() for chat %s", chat_id)
+                        await self.pytgcalls.join_call(chat_id, stream_obj)
+                    else:
+                        raise AttributeError("PyTgCalls instance has no join_group_call, play, or join_call method.")
+
+                try:
+                    await _do_stream()
+                    logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully for chat %s!", chat_id)
+                except Exception as inner_e:
+                    err_str = str(inner_e).lower()
+                    logger.warning("[MEDIA-PIPELINE DEBUG] PyTgCalls stream call encountered exception in chat %s: %s", chat_id, str(inner_e))
+                    if "channel_invalid" in err_str:
+                        await self._log_channel_invalid_diagnostics(chat_id, inner_e, chat_title, chat_type)
+
+                    # Attempt 1 retry after refreshing peer cache
+                    if "channel_invalid" in err_str or "peer" in err_str or "400" in err_str:
+                        logger.info("Voice Chat: Initial stream join failed in chat %s (%s). Refreshing peer resolution and retrying...", chat_id, str(inner_e))
+                        await asyncio.sleep(0.5)
+                        await self.resolve_and_cache_peer(
+                            chat_id, chat_username=chat_username, chat_title=chat_title, chat_type=chat_type
+                        )
+                        try:
+                            await _do_stream()
+                            logger.info("[MEDIA-PIPELINE DEBUG] 10. PyTgCalls playback/streaming call completed successfully on retry for chat %s!", chat_id)
+                        except Exception as retry_err:
+                            retry_err_str = str(retry_err).lower()
+                            if "channel_invalid" in retry_err_str:
+                                await self._log_channel_invalid_diagnostics(chat_id, retry_err, chat_title, chat_type)
+
+                            if any(k in retry_err_str for k in ("groupcall_invalid", "groupcall_forbidden", "no_active_group_call", "voice_chat_not_started", "call is not active")):
+                                raise RuntimeError("Voice Chat is not currently active in this group. Please start the Voice Chat first, then send /play again.")
+                            elif any(k in retry_err_str for k in ("user_not_participant", "channel_private")):
+                                raise RuntimeError(f"Voice Assistant (@{self.assistant_username or 'Assistant'}) is not a member of this group. Please add the assistant as a normal member.")
+                            elif "channel_invalid" in retry_err_str or "peer_id_invalid" in retry_err_str:
+                                raise RuntimeError("Telegram could not resolve the group voice chat (CHANNEL_INVALID). Please ensure the assistant is in this group and the Voice Chat is currently active.")
+                            elif "muted_by_admin" in retry_err_str:
+                                raise RuntimeError("The assistant was muted by an admin in the Voice Chat. Please unmute the assistant to allow audio streaming.")
+                            raise retry_err
+                    elif any(k in err_str for k in ("groupcall_invalid", "groupcall_forbidden", "no_active_group_call", "voice_chat_not_started", "call is not active")):
+                        raise RuntimeError("Voice Chat is not currently active in this group. Please start the Voice Chat first, then send /play again.")
+                    elif any(k in err_str for k in ("user_not_participant", "channel_private")):
+                        raise RuntimeError(f"Voice Assistant (@{self.assistant_username or 'Assistant'}) is not a member of this group. Please add the assistant as a normal member.")
+                    elif "muted_by_admin" in err_str:
+                        raise RuntimeError("The assistant was muted by an admin in the Voice Chat. Please unmute the assistant to allow audio streaming.")
+                    else:
+                        raise inner_e
+
+                self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
+                self.chat_errors[chat_id] = None
+                self.last_error = None
+                return True
+            except Exception as e:
+                err_text = str(e)
+                self.chat_errors[chat_id] = err_text
+                self.last_error = err_text
+                logger.error(
+                    "Voice Chat: PyTgCalls error playing audio in chat %s: %s",
+                    chat_id,
+                    err_text,
+                )
+                return False
+
+        logger.debug("Voice Chat: Playing track in chat %s (UI mode active)", chat_id)
+        self.active_chats[chat_id] = {"source": audio_source, "status": "playing"}
+        self.chat_errors[chat_id] = None
+        self.last_error = None
+        return True
+
+    async def pause_audio(self, chat_id: int) -> bool:
+        """Pauses stream in group VC."""
+        if self.pytgcalls and chat_id in self.active_chats:
+            try:
+                if hasattr(self.pytgcalls, "pause_stream"):
+                    await self.pytgcalls.pause_stream(chat_id)
+                elif hasattr(self.pytgcalls, "pause"):
+                    await self.pytgcalls.pause(chat_id)
+            except Exception as e:
+                logger.warning(
+                    "Voice Chat: Error pausing VC in chat %s: %s", chat_id, str(e)
+                )
+        if chat_id in self.active_chats:
+            self.active_chats[chat_id]["status"] = "paused"
+            return True
+        return False
+
+    async def resume_audio(self, chat_id: int) -> bool:
+        """Resumes stream in group VC."""
+        if self.pytgcalls and chat_id in self.active_chats:
+            try:
+                if hasattr(self.pytgcalls, "resume_stream"):
+                    await self.pytgcalls.resume_stream(chat_id)
+                elif hasattr(self.pytgcalls, "resume"):
+                    await self.pytgcalls.resume(chat_id)
+            except Exception as e:
+                logger.warning(
+                    "Voice Chat: Error resuming VC in chat %s: %s", chat_id, str(e)
+                )
+        if chat_id in self.active_chats:
+            self.active_chats[chat_id]["status"] = "playing"
+            return True
+        return False
+
+    async def stop_audio(self, chat_id: int) -> bool:
+        """Leaves or stops streaming in group VC."""
+        if self.pytgcalls and chat_id in self.active_chats:
+            try:
+                if hasattr(self.pytgcalls, "leave_group_call"):
+                    await self.pytgcalls.leave_group_call(chat_id)
+                elif hasattr(self.pytgcalls, "leave_call"):
+                    await self.pytgcalls.leave_call(chat_id)
+                elif hasattr(self.pytgcalls, "leave"):
+                    await self.pytgcalls.leave(chat_id)
+            except Exception as e:
+                logger.warning(
+                    "Voice Chat: Error leaving VC in chat %s: %s", chat_id, str(e)
+                )
+        if chat_id in self.active_chats:
+            del self.active_chats[chat_id]
+            return True
+        return False
+
+    async def leave_chat(self, chat_id: int) -> bool:
+        """Alias for stopping audio and leaving group voice chat."""
+        return await self.stop_audio(chat_id)
+
+    async def leave_call(self, chat_id: int) -> bool:
+        """Alias for stopping audio and leaving group voice chat."""
+        return await self.stop_audio(chat_id)
+
+    async def run_vc_diagnostic(self, chat_id: int) -> dict:
+        """
+        Runs a comprehensive diagnostic of the PyTgCalls playback pipeline on /tmp/aaruu_cache/test.mp3.
+        Returns a dictionary of diagnostic results.
+        """
+        results = {
+            "file_exists": False,
+            "file_size": 0,
+            "ffmpeg_valid": False,
+            "ffmpeg_log": "",
+            "pytgcalls_connected": False,
+            "vc_state": "disconnected",
+            "mediastream_created": False,
+            "play_success": False,
+            "error": None
+        }
+        
+        try:
+            # 1. Setup cache & test file
+            cache_dir = "/tmp/aaruu_cache"
+            test_path = os.path.join(cache_dir, "test.mp3")
+            
+            # If test.mp3 doesn't exist, try to copy any existing mp3 from cache
+            if not os.path.exists(test_path):
+                if os.path.exists(cache_dir):
+                    mp3_files = [f for f in os.listdir(cache_dir) if f.endswith(".mp3") and f != "test.mp3"]
+                    if mp3_files:
+                        import shutil
+                        shutil.copy(os.path.join(cache_dir, mp3_files[0]), test_path)
+                        logger.info("Diagnostic: Copied %s to test.mp3", mp3_files[0])
+            
+            # Check file presence
+            results["file_exists"] = os.path.exists(test_path)
+            if results["file_exists"]:
+                results["file_size"] = os.path.getsize(test_path)
+                
+                # 2. FFmpeg validation
+                success, ffmpeg_log = await verify_media_file_with_ffmpeg(test_path)
+                results["ffmpeg_valid"] = success
+                results["ffmpeg_log"] = ffmpeg_log
+            else:
+                results["error"] = "No test file found in cache."
+                return results
+
+            # 3. PyTgCalls connected check
+            results["pytgcalls_connected"] = bool(self.pytgcalls and self.is_connected)
+            if not results["pytgcalls_connected"]:
+                results["error"] = "PyTgCalls or Assistant is not connected/started."
+                return results
+                
+            # 4. VC / Call State
+            results["vc_state"] = "active" if chat_id in self.active_chats else "inactive"
+            
+            # 5. MediaStream creation
+            stream_obj = None
+            try:
+                if MediaStream:
+                    from pytgcalls.types import AudioQuality
+                    stream_obj = MediaStream(test_path, audio_parameters=AudioQuality.HIGH)
+                elif AudioPiped:
+                    stream_obj = AudioPiped(test_path)
+                else:
+                    stream_obj = test_path
+                    
+                results["mediastream_created"] = (stream_obj is not None)
+            except Exception as stream_err:
+                results["error"] = f"MediaStream creation failed: {str(stream_err)}"
+                return results
+
+            # 6. PyTgCalls.play()
+            try:
+                if hasattr(self.pytgcalls, "play"):
+                    await self.pytgcalls.play(chat_id, stream_obj)
+                    results["play_success"] = True
+                elif hasattr(self.pytgcalls, "join_group_call"):
+                    await self.pytgcalls.join_group_call(chat_id, stream_obj)
+                    results["play_success"] = True
+                else:
+                    results["error"] = "No play or join_group_call method found on PyTgCalls client."
+            except Exception as play_err:
+                results["error"] = f"PyTgCalls play invocation failed: {str(play_err)}"
+                return results
+                
+            self.active_chats[chat_id] = {"source": test_path, "status": "playing"}
+            
+        except Exception as general_err:
+            results["error"] = f"Unexpected diagnostic error: {str(general_err)}"
+            
+        return results
+
+
+voice_assistant = VoiceChatAssistant()
+
