@@ -1,0 +1,15 @@
+aiohttp==3.9.5
+# yt-dlp is intentionally NOT pinned to an old version. YouTube's bot-detection
+# changes frequently and yt-dlp ships fixes for it almost every week. Pinning
+# an old version is the #1 cause of "Sign in to confirm you're not a bot" and
+# download-failed errors. Keep this on a recent release; upgrade regularly:
+#   pip install -U yt-dlp
+yt-dlp>=2025.09.01
+python-dotenv==1.0.1
+pyrogram==2.0.106
+py-tgcalls==2.2.0
+tgcrypto==1.2.5
+aiofiles==23.2.1
+psutil==5.9.8
+
+
