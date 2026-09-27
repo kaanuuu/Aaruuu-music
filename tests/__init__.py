@@ -1,0 +1,3 @@
+"""
+Aaruu Music - Tests Package
+"""
